@@ -290,6 +290,33 @@ function toMinutes(h12: number, min: number, ampm: Meridiem) {
   return h24 * 60 + m;
 }
 
+
+function getNowMinutes(d: Date = new Date()) {
+  return d.getHours() * 60 + d.getMinutes();
+}
+
+function getTodayKey(d: Date = new Date()) {
+  return dayKey(d);
+}
+
+function hydrationWindowFromInputs(
+  wakeHour: number,
+  wakeMinute: number,
+  wakeMeridiem: Meridiem,
+  sleepHour: number,
+  sleepMinute: number,
+  sleepMeridiem: Meridiem
+) {
+  const wakeH = normalizeHourInput(String(wakeHour));
+  const wakeM = normalizeMinuteInput(String(wakeMinute));
+  const sleepH = normalizeHourInput(String(sleepHour));
+  const sleepM = normalizeMinuteInput(String(sleepMinute));
+  const startMins = toMinutes(wakeH, wakeM, wakeMeridiem);
+  let endMins = toMinutes(sleepH, sleepM, sleepMeridiem);
+  if (endMins <= startMins) endMins += 1440;
+  return { startMins, endMins };
+}
+
 function normalizeHourInput(rawValue: string) {
   const n = Number(rawValue);
   if (!Number.isFinite(n)) return 1;
@@ -422,7 +449,7 @@ const toMeridiem = (v: string): Meridiem => (v === "AM" ? "AM" : "PM");
 function makeDefaultState() {
   return {
     hasOnboarded: false,
-    step: 0 as 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10,
+    step: 0 as 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11,
     splashSeen: false,
 
     weightKg: 70,
@@ -435,6 +462,12 @@ function makeDefaultState() {
     snap: "free" as "quarters" | "tenths" | "free",
     wakeMins: 480,
     sleepMins: 1320,
+    wakeHour: 8,
+    wakeMinute: 0,
+    wakeMeridiem: "AM" as Meridiem,
+    sleepHour: 10,
+    sleepMinute: 0,
+    sleepMeridiem: "PM" as Meridiem,
 
 
     dayKey: dayKeyBySleep(new Date(), 1320),
@@ -482,6 +515,88 @@ function DropletPlugIcon({ className }: { className?: string }) {
       <rect x="11" y="10" width="2" height="6" rx="1" fill="rgba(255,255,255,.92)" />
       <rect x="9" y="12" width="6" height="2" rx="1" fill="rgba(255,255,255,.92)" />
     </svg>
+  );
+}
+
+function BottomNavBar({
+  onOpenSettings,
+  onOpenAnalytics,
+  onTrack,
+  isTrackDisabled,
+  isRefill,
+  onRefill,
+  isAnalyticsEnabled = false,
+}: {
+  onOpenSettings: () => void;
+  onOpenAnalytics: () => void;
+  onTrack: () => void;
+  isTrackDisabled: boolean;
+  isRefill: boolean;
+  onRefill: () => void;
+  isAnalyticsEnabled?: boolean;
+}) {
+  return (
+    <div
+      className="fixed inset-x-0 bottom-0 z-40 border-t border-white/10 bg-[#0B0B0F]/80 backdrop-blur-md"
+      style={{ paddingBottom: "calc(env(safe-area-inset-bottom) + 18px)" }}
+    >
+      <style>{`
+        @keyframes navPop { 0% { opacity: .6; transform: scale(.96); } 100% { opacity: 1; transform: scale(1); } }
+      `}</style>
+      <div className="mx-auto flex max-w-xl items-center justify-between px-8 pt-3">
+        <button
+          onClick={isAnalyticsEnabled ? onOpenAnalytics : undefined}
+          disabled={!isAnalyticsEnabled}
+          className={"flex w-20 flex-col items-center gap-1 text-xs font-semibold " + (isAnalyticsEnabled ? "text-white/80" : "text-white/40")}
+        >
+          <svg viewBox="0 0 24 24" className="h-5 w-5" aria-hidden="true">
+            <path d="M4 19V9M10 19V5M16 19V12M22 19V8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+          </svg>
+          <span>Analytics</span>
+        </button>
+
+        {isRefill ? (
+          <button
+            onClick={onRefill}
+            className="flex h-12 w-24 items-center justify-center rounded-2xl bg-green-500 text-sm font-extrabold text-white transition animate-[navPop_.2s_ease-out]"
+          >
+            Refill
+          </button>
+        ) : (
+          <button
+            onClick={onTrack}
+            disabled={isTrackDisabled}
+            className={
+              "flex h-12 w-24 items-center justify-center rounded-2xl text-sm font-extrabold transition animate-[navPop_.2s_ease-out] " +
+              (isTrackDisabled ? "bg-white/10 text-white/40 border border-white/10" : "bg-[#0A84FF] text-white")
+            }
+          >
+            Track
+          </button>
+        )}
+
+        <button onClick={onOpenSettings} className="flex w-20 flex-col items-center gap-1 text-xs font-semibold text-white/80">
+          <svg viewBox="0 0 24 24" className="h-5 w-5" aria-hidden="true">
+            <path
+              d="M12 8.2a3.8 3.8 0 1 0 0 7.6 3.8 3.8 0 0 0 0-7.6Z"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.8"
+            />
+            <path
+              d="M4.5 12a7.5 7.5 0 0 0 .08 1.1l-2 1.2 2 3.5 2.2-.7a7.6 7.6 0 0 0 1.9 1.1l.3 2.3h4l.3-2.3a7.6 7.6 0 0 0 1.9-1.1l2.2.7 2-3.5-2-1.2a7.5 7.5 0 0 0 0-2.2l2-1.2-2-3.5-2.2.7a7.6 7.6 0 0 0-1.9-1.1L13 3.5h-4l-.3 2.3a7.6 7.6 0 0 0-1.9 1.1l-2.2-.7-2 3.5 2 1.2A7.5 7.5 0 0 0 4.5 12Z"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              opacity="0.7"
+            />
+          </svg>
+          <span>Settings</span>
+        </button>
+      </div>
+    </div>
   );
 }
 
@@ -537,6 +652,46 @@ function QuickAddSheet({ onClose, onAdd }: { onClose: () => void; onAdd: (ml: nu
 
             <div className="mt-3 text-xs text-white/60">This won’t change your bottle level.</div>
           </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MorningResetModal({ onConfirm, isClosing }: { onConfirm: () => void; isClosing: boolean }) {
+  return (
+    <div className="fixed inset-0 z-[60]">
+      <style>{`
+        @keyframes resetFade { from { opacity: 0; } to { opacity: 1; } }
+        @keyframes resetLift { from { opacity: 0; transform: translateY(14px) scale(.98); } to { opacity: 1; transform: translateY(0) scale(1); } }
+        @keyframes resetFadeOut { from { opacity: 1; } to { opacity: 0; } }
+        @keyframes resetDrop { from { opacity: 1; transform: translateY(0) scale(1); } to { opacity: 0; transform: translateY(12px) scale(.98); } }
+      `}</style>
+      <div
+        className={
+          "absolute inset-0 bg-black/70 backdrop-blur-sm " +
+          (isClosing ? "animate-[resetFadeOut_.22s_ease-in]" : "animate-[resetFade_.25s_ease-out]")
+        }
+      />
+      <div className="absolute inset-0 flex items-center justify-center px-5">
+        <div
+          className={
+            "w-full max-w-md rounded-3xl border border-white/10 bg-[#121218]/95 p-6 shadow-[0_20px_60px_rgba(0,0,0,.55)] " +
+            (isClosing ? "animate-[resetDrop_.22s_ease-in]" : "animate-[resetLift_.28s_ease-out]")
+          }
+        >
+          <div className="text-2xl font-extrabold">
+            <span className="text-[#F6C945]">Morning reset</span> <span>🌞</span>
+          </div>
+          <div className="mt-2 text-white/75">
+            Let’s start fresh — <span className="font-extrabold text-[#0A84FF]">refill your bottle</span> and we’ll track from here.
+          </div>
+          <button
+            onClick={onConfirm}
+            className="mt-6 w-full px-5 py-4 rounded-2xl bg-green-500 text-white font-extrabold active:scale-[0.99]"
+          >
+            I’ve refilled
+          </button>
         </div>
       </div>
     </div>
@@ -661,7 +816,7 @@ function WelcomeSplash({ onContinue, instant = false }: { onContinue: () => void
   }, [instant]);
 
   return (
-    <div className="min-h-screen bg-[#0B0B0F] text-white flex items-center justify-center">
+    <div className="min-h-screen bg-[#0B0B0F] text-white flex items-center justify-center select-none">
       <style>{`@keyframes floaty{0%,100%{transform:translateY(0)}50%{transform:translateY(-10px)}}@keyframes fadeUp{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}`}</style>
 
       <div className="w-full max-w-md px-5 text-center">
@@ -736,7 +891,7 @@ function OnboardingFrame({
   const labelClass = buttonTheme === "green" ? "text-[#86EFAC]" : "text-[#6EABD4]";
 
   return (
-    <div className="min-h-screen bg-[#0B0B0F] text-white">
+    <div className="min-h-screen bg-[#0B0B0F] text-white select-none">
       <style>{`
         @keyframes introIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
         @keyframes softFloat { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-6px); } }
@@ -745,7 +900,7 @@ function OnboardingFrame({
         @keyframes labelIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
       `}</style>
 
-      <div className="mx-auto max-w-xl min-h-screen px-5 pt-6 pb-10 md:pt-10 flex flex-col relative">
+      <div className="mx-auto max-w-xl min-h-screen px-5 pt-10 pb-10 md:pt-12 flex flex-col relative">
         <div style={{ animation: "introIn .55s ease-out both" }} className="relative flex items-center justify-center">
           <div className="text-[18px] font-medium text-[#4D5564] tracking-wide">—&nbsp; {stepText} &nbsp;—</div>
 
@@ -760,11 +915,11 @@ function OnboardingFrame({
           </button>
         </div>
 
-        <div className="mt-16 md:mt-28 text-center" style={{ animation: "introIn .65s ease-out .08s both" }}>
+        <div className="mt-20 md:mt-28 text-center" style={{ animation: "introIn .65s ease-out .08s both" }}>
           <div className="text-[46px] leading-[1.06] font-semibold">{title}</div>
         </div>
 
-        <div className="mt-6 md:mt-10 flex items-center justify-center" style={{ animation: "introIn .65s ease-out .18s both" }}>
+        <div className="mt-8 md:mt-10 flex items-center justify-center" style={{ animation: "introIn .65s ease-out .18s both" }}>
           <div className="max-w-[78%] text-center text-[21px] leading-relaxed text-[#757B8A]" style={{ animation: "softFloat 5.5s ease-in-out .8s infinite" }}>
             {body}
           </div>
@@ -967,6 +1122,24 @@ export default function WaterBottleTracker() {
     runSelfTests();
   }, []);
 
+  // FID_VERIFY_START
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    const H = 300;
+    const case1Expected = 0.9;
+    const case1Actual = 0.0;
+    const case1Fill = computeExpectedFillFrac(case1Expected, case1Actual);
+    const case1Y = clamp(Math.round(H - case1Fill * H), 6, H - 6);
+    console.log(`FID verify case1 expectedFillFrac=${case1Fill}, yTarget=${case1Y}`);
+
+    const case2Expected = 1.5;
+    const case2Actual = 0.0;
+    const case2Fill = computeExpectedFillFrac(case2Expected, case2Actual);
+    const case2Y = clamp(Math.round(H - case2Fill * H), 6, H - 6);
+    console.log(`FID verify case2 expectedFillFrac=${case2Fill}, yTarget=${case2Y}`);
+  }, []);
+  // FID_VERIFY_END
+
   const [nowTick, setNowTick] = useState(0);
   useEffect(() => {
     const id = window.setInterval(() => setNowTick((t) => t + 1), 10000);
@@ -975,7 +1148,7 @@ export default function WaterBottleTracker() {
 
   useEffect(() => {
     if (!state.hasOnboarded) return;
-    if ([1, 2, 3, 4, 9, 10].includes(state.step)) {
+    if ([1, 2, 3, 4, 9, 10, 11].includes(state.step)) {
       setState((s) => ({ ...s, step: 0 }));
     }
   }, [state.hasOnboarded, state.step]);
@@ -1117,6 +1290,10 @@ export default function WaterBottleTracker() {
     () => expectedMlAt(state.goalML, new Date(), state.wakeMins, state.sleepMins),
     [state.goalML, state.wakeMins, state.sleepMins, nowTick]
   );
+  const expectedBottlesNow = useMemo(
+    () => (state.bottleML > 0 ? expectedNowMl / state.bottleML : 0),
+    [expectedNowMl, state.bottleML]
+  );
   const diffMl = useMemo(() => totalConsumed - expectedNowMl, [totalConsumed, expectedNowMl]);
   const pacingToleranceMl = useMemo(() => Math.max(state.goalML * 0.05, 150), [state.goalML]);
   const pacingStatus = useMemo(() => {
@@ -1124,20 +1301,45 @@ export default function WaterBottleTracker() {
     if (diffMl < -pacingToleranceMl) return "behind" as const;
     return diffMl >= 0 ? "ahead" : "behind";
   }, [diffMl, pacingToleranceMl]);
-  const pacingBottleDelta = useMemo(() => {
-    if (state.bottleML <= 0) return 0;
-    const deltaMl = pacingStatus === "behind" ? Math.max(0, -diffMl) : Math.max(0, diffMl);
-    const bottles = Math.max(0, deltaMl / state.bottleML);
-    return Math.round(bottles * 2) / 2;
-  }, [diffMl, state.bottleML, pacingStatus]);
-  const targetRemainingFraction = useMemo(() => {
+  const computeExpectedFillFrac = (expectedBottles: number, actualConsumedBottles: number) => {
+    const behindBottles = expectedBottles - actualConsumedBottles;
+    if (behindBottles >= 1) return 0.03;
+    return 1 - (expectedBottles % 1);
+  };
+  const FLAG_OFFSET_POINTS = [
+    { b: 0.0, px: 0 },
+    { b: 0.4, px: -10 },
+    { b: 0.5, px: -15 },
+    { b: 1.0, px: -22 },
+    { b: 1.5, px: -28 },
+    { b: 2.0, px: -34 },
+  ];
+  const flagOffsetForExpectedBottles = (expectedBottles: number) => {
+    const b = Math.max(0, expectedBottles);
+    if (b <= FLAG_OFFSET_POINTS[0].b) return FLAG_OFFSET_POINTS[0].px;
+    const last = FLAG_OFFSET_POINTS[FLAG_OFFSET_POINTS.length - 1];
+    if (b >= last.b) return last.px;
+    for (let i = 0; i < FLAG_OFFSET_POINTS.length - 1; i += 1) {
+      const a = FLAG_OFFSET_POINTS[i];
+      const c = FLAG_OFFSET_POINTS[i + 1];
+      if (b >= a.b && b <= c.b) {
+        const t = (b - a.b) / (c.b - a.b);
+        return a.px + t * (c.px - a.px);
+      }
+    }
+    return 0;
+  };
+  const targetLineRemainingFraction = useMemo(() => {
     if (state.bottleML <= 0) return state.remaining;
-    const expectedCurrentBottleConsumed = expectedNowMl % state.bottleML;
-    return clamp(1 - expectedCurrentBottleConsumed / state.bottleML, 0, 1);
-  }, [expectedNowMl, state.bottleML, state.remaining]);
-  const targetLineRemainingFraction =
-    pacingStatus === "behind" && pacingBottleDelta >= 1 ? 0.06 : targetRemainingFraction;
+    const actualConsumedBottles = totalConsumed / state.bottleML;
+    const expectedFillFrac = computeExpectedFillFrac(expectedBottlesNow, actualConsumedBottles);
+    return clamp(expectedFillFrac, 0, 1);
+  }, [expectedBottlesNow, totalConsumed, state.bottleML, state.remaining]);
   const targetLineY = Math.round(300 - targetLineRemainingFraction * 300);
+  const expectedBottlesForFlag = state.completedBottles > 0 ? expectedBottlesNow % 1 : expectedBottlesNow;
+  const flagOffsetPx = flagOffsetForExpectedBottles(expectedBottlesForFlag);
+  const flagTop = targetLineY + flagOffsetPx;
+  const showFlag = expectedBottlesNow >= 0.05;
 
   function advanceBottle(s: AppState) {
     const n = ceilDiv(s.goalML, s.bottleML);
@@ -1224,6 +1426,7 @@ export default function WaterBottleTracker() {
         history: h.slice(0, -1),
       };
     });
+    setLowLevelTracked(false);
   }
 
   const dialRef = useRef<HTMLDivElement | null>(null);
@@ -1233,6 +1436,22 @@ export default function WaterBottleTracker() {
   useEffect(() => {
     if (state.hasOnboarded) setPendingRemaining(state.remaining);
   }, [state.remaining, state.hasOnboarded]);
+
+  const [displayRemaining, setDisplayRemaining] = useState(pendingRemaining);
+  const [scanAnimTarget, setScanAnimTarget] = useState<number | null>(null);
+  const scanAnimRafRef = useRef<number | null>(null);
+  const [showLevelUpdated, setShowLevelUpdated] = useState(false);
+  const levelUpdatedTimeoutRef = useRef<number | null>(null);
+  const [lowLevelTracked, setLowLevelTracked] = useState(false);
+  const [lastMorningResetToken, setLastMorningResetToken] = useState<string | null>(() => {
+    try {
+      return localStorage.getItem("v3_lastMorningResetToken");
+    } catch {
+      return null;
+    }
+  });
+  const [showMorningReset, setShowMorningReset] = useState(false);
+  const [morningResetClosing, setMorningResetClosing] = useState(false);
 
   const onboardingFileRef = useRef<HTMLInputElement | null>(null);
   const onboardingAbortRef = useRef<AbortController | null>(null);
@@ -1244,6 +1463,48 @@ export default function WaterBottleTracker() {
       if (onboardingAbortRef.current) onboardingAbortRef.current.abort();
     };
   }, []);
+
+
+  const checkMorningReset = () => {
+    if (!state.hasOnboarded) {
+      setShowMorningReset(false);
+      setMorningResetClosing(false);
+      return;
+    }
+    const nowMins = getNowMinutes();
+    const wakeMins = clamp(Math.round(state.wakeMins), 0, 1439);
+    const todayKey = getTodayKey();
+    const token = `${todayKey}-${wakeMins}`;
+    if (nowMins >= wakeMins && lastMorningResetToken !== token) {
+      setShowMorningReset(true);
+      setMorningResetClosing(false);
+    } else {
+      setShowMorningReset(false);
+      setMorningResetClosing(false);
+    }
+  };
+
+  useEffect(() => {
+    checkMorningReset();
+  }, [state.wakeMins, lastMorningResetToken]);
+
+  useEffect(() => {
+    const onVis = () => {
+      if (document.visibilityState === "visible") checkMorningReset();
+    };
+    document.addEventListener("visibilitychange", onVis);
+    return () => document.removeEventListener("visibilitychange", onVis);
+  }, [state.wakeMins, lastMorningResetToken]);
+
+  useEffect(() => {
+    try {
+      if (lastMorningResetToken) {
+        localStorage.setItem("v3_lastMorningResetToken", lastMorningResetToken);
+      }
+    } catch {
+      // ignore
+    }
+  }, [lastMorningResetToken]);
 
   function onOnboardingPick() {
     setOnboardingScanError(null);
@@ -1325,6 +1586,12 @@ export default function WaterBottleTracker() {
     setScanError(null);
   }
 
+  function commitScanToDailyProgress(scannedFraction: number) {
+    const wasEmpty = scannedFraction <= 0.0001;
+    setRemaining(scannedFraction, { action: "track" });
+    if (wasEmpty) setPendingRemaining(1);
+  }
+
   function onScanFileChange(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     e.target.value = "";
@@ -1344,6 +1611,8 @@ export default function WaterBottleTracker() {
         const percent = await estimatePercentFull(downscaled, controller.signal);
         const fraction = clamp(percent / 100, 0, 1);
         setPendingRemaining(fraction);
+        setScanAnimTarget(fraction);
+        setLowLevelTracked(false);
         setScanState("done");
         setScanMessage(`Scan complete: ${Math.round(percent)}% full`);
         setScanError(null);
@@ -1387,11 +1656,13 @@ export default function WaterBottleTracker() {
   function onDialPointerDown(e: React.PointerEvent) {
     e.preventDefault();
     setDragging(true);
+    setLowLevelTracked(false);
     setPendingRemaining(dialValueFromClientY(e.clientY));
   }
 
   function onDialPointerMove(e: PointerEvent) {
     if (!dragging) return;
+    setLowLevelTracked(false);
     setPendingRemaining(dialValueFromClientY(e.clientY));
   }
 
@@ -1408,7 +1679,50 @@ export default function WaterBottleTracker() {
     };
   }, [dragging, state.remaining, state.snap]);
 
+  useEffect(() => {
+    return () => {
+      if (levelUpdatedTimeoutRef.current) window.clearTimeout(levelUpdatedTimeoutRef.current);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (scanAnimTarget === null) {
+      setDisplayRemaining(pendingRemaining);
+      return;
+    }
+
+    if (scanAnimRafRef.current) {
+      cancelAnimationFrame(scanAnimRafRef.current);
+      scanAnimRafRef.current = null;
+    }
+
+    const start = clamp(displayRemaining, 0, 1);
+    const end = clamp(scanAnimTarget, 0, 1);
+    const startTime = performance.now();
+    const durationMs = 550;
+    const easeOutCubic = (t: number) => 1 - Math.pow(1 - t, 3);
+
+    const step = (now: number) => {
+      const t = clamp((now - startTime) / durationMs, 0, 1);
+      const eased = easeOutCubic(t);
+      setDisplayRemaining(start + (end - start) * eased);
+      if (t < 1) {
+        scanAnimRafRef.current = requestAnimationFrame(step);
+      } else {
+        scanAnimRafRef.current = null;
+        setScanAnimTarget(null);
+      }
+    };
+
+    scanAnimRafRef.current = requestAnimationFrame(step);
+    return () => {
+      if (scanAnimRafRef.current) cancelAnimationFrame(scanAnimRafRef.current);
+      scanAnimRafRef.current = null;
+    };
+  }, [scanAnimTarget, pendingRemaining, displayRemaining]);
+
   const remainingPct = Math.round(pendingRemaining * 100);
+  const isLowWater = pendingRemaining <= 0.1;
 
   const dialThumbTop = useMemo(() => {
     const H = 260;
@@ -1449,6 +1763,51 @@ export default function WaterBottleTracker() {
     setBottleSizeFlowSource("onboarding");
   }
 
+  function handleRefill() {
+    commitScanToDailyProgress(pendingRemaining);
+    setState((s) => {
+      const consumed = totalConsumedFromState(s);
+      const pct = s.goalML > 0 ? Math.round((consumed / s.goalML) * 100) : 0;
+      const completed = clamp(s.completedBottles, 0, ceilDiv(s.goalML, s.bottleML));
+      const extra = clamp(s.extraML || 0, 0, 100000);
+      const newCarry = clamp(Math.round(consumed - completed * s.bottleML - extra), 0, 100000);
+      return {
+        ...s,
+        celebrate: { type: "bottle", pct: clamp(pct, 0, 100), consumedML: consumed },
+        carryML: newCarry,
+        remaining: 1,
+      };
+    });
+    setPendingRemaining(1);
+    setDisplayRemaining(1);
+    setScanAnimTarget(1);
+    setLowLevelTracked(false);
+  }
+
+  function handleMorningRefill() {
+    setMorningResetClosing(true);
+    window.setTimeout(() => {
+      const todayKey = getTodayKey();
+      const wakeMins = clamp(Math.round(state.wakeMins), 0, 1439);
+      setState((s) => ({
+        ...s,
+        dayKey: dayKeyBySleep(new Date(), s.sleepMins),
+        completedBottles: 0,
+        remaining: 1,
+        carryML: 0,
+        extraML: 0,
+        history: [],
+        celebrate: null,
+      }));
+      setPendingRemaining(1);
+      setDisplayRemaining(1);
+      setScanAnimTarget(1);
+      setLastMorningResetToken(`${todayKey}-${wakeMins}`);
+      setShowMorningReset(false);
+      setMorningResetClosing(false);
+    }, 220);
+  }
+
   function applyRecommendation() {
     const rec = recommendGoalML({ weightKg: Number(state.weightKg), activity: state.activity, warm: state.warm });
     setState((s) => ({ ...s, goalML: rec.ml }));
@@ -1460,12 +1819,20 @@ export default function WaterBottleTracker() {
   }, [state.weightKg, state.activity, state.warm]);
 
   if (!state.hasOnboarded && state.step === 0) {
-    return <WelcomeSplash instant={!!state.splashSeen} onContinue={() => setState((s) => ({ ...s, splashSeen: true, step: 1 }))} />;
+    return (
+      <>
+        <WelcomeSplash instant={!!state.splashSeen} onContinue={() => setState((s) => ({ ...s, splashSeen: true, step: 1 }))} />
+        {showMorningReset && <MorningResetModal onConfirm={handleMorningRefill} isClosing={morningResetClosing} />}
+      </>
+    );
   }
 
   if (state.hasOnboarded && state.step === 0) {
     return (
-      <div className="min-h-screen bg-[#0B0B0F] text-white">
+      <div className="min-h-screen bg-[#0B0B0F] pb-[110px] text-white select-none">
+        <style>{`
+          @keyframes fadeOutLineUi { from { opacity: 1; } to { opacity: 0; } }
+        `}</style>
         {showQuickAdd && <QuickAddSheet onClose={() => setShowQuickAdd(false)} onAdd={addExtra} />}
 
         {state.celebrate && (
@@ -1488,7 +1855,12 @@ export default function WaterBottleTracker() {
                 </div>
 
                 <button
-                  onClick={() => setState((s) => ({ ...s, celebrate: null }))}
+                  onClick={() => {
+                    setState((s) => ({ ...s, celebrate: null }));
+                    if (state.celebrate?.type === "bottle") {
+                      setLowLevelTracked(false);
+                    }
+                  }}
                   className={
                     "mt-6 w-full px-5 py-4 rounded-2xl font-extrabold active:scale-[0.99] " +
                     (state.celebrate.type === "goal" ? "bg-green-500 text-black" : "bg-green-500 text-white")
@@ -1507,7 +1879,24 @@ export default function WaterBottleTracker() {
               <div className="text-5xl font-extrabold leading-tight">
                 <span className="text-[#0A84FF]">{bottlesLeftText}</span> {bottleWord} till goal
               </div>
-              <div className="mt-3 text-2xl font-extrabold leading-tight text-white">How much water is in your bottle?</div>
+              <div className="relative mt-3 text-2xl font-extrabold leading-tight">
+                <span
+                  className={
+                    "block transition-all duration-300 ease-out " +
+                    (showLevelUpdated ? "opacity-0 translate-y-1 scale-[0.99]" : "opacity-100 translate-y-0 scale-100 text-white")
+                  }
+                >
+                  How much water is in your bottle?
+                </span>
+                <span
+                  className={
+                    "absolute inset-0 block transition-all duration-300 ease-out text-green-500 " +
+                    (showLevelUpdated ? "opacity-100 translate-y-0 scale-100" : "opacity-0 translate-y-1 scale-[0.99]")
+                  }
+                >
+                  Water level updated
+                </span>
+              </div>
               <div className="mt-2 text-xs text-white/45">
                 {(() => {
                   const now = new Date();
@@ -1520,36 +1909,29 @@ export default function WaterBottleTracker() {
               </div>
             </div>
 
-            <button
-              onClick={() => setState((s) => ({ ...s, step: 6 }))}
-              className="h-10 w-10 rounded-2xl border border-white/12 bg-white/8 active:bg-white/12 flex items-center justify-center"
-              aria-label="Edit setup"
-              title="Edit setup"
-            >
-              ⚙︎
-            </button>
           </div>
         </div>
 
         <div className="px-5">
           <div className="flex items-center justify-center gap-6">
-            <div className="relative h-[300px]">
-              {pacingStatus === "behind" && (
+            <div className="relative h-[300px]" style={{ marginLeft: "-3px" }}>
+              {showFlag && (
                 <div
                   className={
-                    "absolute left-[-10px] text-2xl font-extrabold leading-none " +
+                  "absolute left-[3px] text-2xl font-extrabold leading-none " +
                     (pacingStatus === "behind" ? "text-[#FF453A]" : "text-green-400")
                   }
-                  style={{
-                    top: `${Math.max(6, Math.min(294, targetLineY + (pacingStatus === "behind" && pacingBottleDelta > 1 ? -20 : 0)))}px`,
-                  }}
-                >
+                style={{
+                  top: `${flagTop}px`,
+                  animation: pacingStatus === "ahead" ? "fadeOutLineUi 0.6s ease forwards" : undefined,
+                }}
+              >
                   🏁
                 </div>
               )}
               <BottleVector
                 shape={state.shape}
-                level={pendingRemaining}
+                level={displayRemaining}
                 className={shapeClasses(state.shape)}
                 targetLevel={targetLineRemainingFraction}
                 targetStatus={pacingStatus}
@@ -1655,27 +2037,8 @@ export default function WaterBottleTracker() {
                 Cancel
               </button>
             )}
-            {scanMessage && <div className="text-xs text-white/70">{scanMessage}</div>}
+            {scanMessage && scanState !== "scanning" && <div className="text-xs text-white/70">{scanMessage}</div>}
             {scanError && <div className="text-xs text-[#FF453A]">{scanError}</div>}
-          </div>
-
-          <div className="mt-5 flex justify-center">
-            <button
-              onClick={() => {
-                const wasEmpty = pendingRemaining <= 0.0001;
-                setRemaining(pendingRemaining, { action: "track" });
-                if (wasEmpty) setPendingRemaining(1);
-              }}
-              disabled={Math.abs(pendingRemaining - state.remaining) < 1e-6}
-              className={
-                "w-full max-w-md px-5 py-4 rounded-2xl font-extrabold active:scale-[0.99] transition " +
-                (Math.abs(pendingRemaining - state.remaining) < 1e-6
-                  ? "bg-white/10 text-white/40 border border-white/10"
-                  : "bg-[#0A84FF] text-white")
-              }
-            >
-              Track
-            </button>
           </div>
 
           <div className="mt-8">
@@ -1708,14 +2071,32 @@ export default function WaterBottleTracker() {
             </div>
           </div>
         </div>
+        <BottomNavBar
+          onOpenSettings={() => setState((s) => ({ ...s, step: 6 }))}
+          onOpenAnalytics={() => {}}
+          onTrack={() => {
+            commitScanToDailyProgress(pendingRemaining);
+            if (isLowWater) setLowLevelTracked(true);
+            if (levelUpdatedTimeoutRef.current) window.clearTimeout(levelUpdatedTimeoutRef.current);
+            setShowLevelUpdated(true);
+            levelUpdatedTimeoutRef.current = window.setTimeout(() => {
+              setShowLevelUpdated(false);
+              levelUpdatedTimeoutRef.current = null;
+            }, 5000);
+          }}
+          isTrackDisabled={Math.abs(pendingRemaining - state.remaining) < 1e-6}
+          isRefill={isLowWater && lowLevelTracked}
+          onRefill={handleRefill}
+        />
+        {showMorningReset && <MorningResetModal onConfirm={handleMorningRefill} isClosing={morningResetClosing} />}
       </div>
     );
   }
 
   // Onboarding container
   return (
-    <div className="min-h-screen bg-[#0B0B0F] text-white">
-      <div className="max-w-xl mx-auto px-5 pt-8 pb-10">
+    <div className="min-h-screen bg-[#0B0B0F] text-white select-none">
+      <div className="max-w-xl mx-auto min-h-screen px-5 pt-6 pb-10 flex flex-col justify-center">
         {state.step === 1 && (
           <OnboardingIntro1
             onContinue={() => setStep(2)}
@@ -1915,7 +2296,7 @@ export default function WaterBottleTracker() {
               <div className="mt-2 text-sm font-extrabold text-[#0A84FF]">+{drankMl} ml drank</div>
 
               <button
-                onClick={() => setStep(7)}
+                onClick={() => setStep(11)}
                 className="mt-8 w-full max-w-md px-5 py-4 rounded-2xl bg-[#0A84FF] font-extrabold active:scale-[0.99]"
               >
                 Continue
@@ -1923,6 +2304,159 @@ export default function WaterBottleTracker() {
             </div>
           );
         })()}
+
+        {state.step === 11 && (
+          <div>
+            <style>{`
+              @keyframes setupIn { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
+              @keyframes setupInSoft { from { opacity: 0; transform: translateY(8px) scale(0.99); } to { opacity: 1; transform: translateY(0) scale(1); } }
+            `}</style>
+
+            <div className="text-2xl font-extrabold" style={{ animation: "setupIn .55s ease-out .04s both" }}>
+              Set your hydration window
+            </div>
+            <div className="mt-2 text-white/70" style={{ animation: "setupIn .55s ease-out .10s both" }}>
+              Rough estimate is fine — we’ll pace your goal between wake and sleep.
+            </div>
+
+            <div
+              className="mt-6 rounded-3xl border border-white/10 bg-white/6 p-5"
+              style={{ animation: "setupInSoft .6s cubic-bezier(0.2,0,0,1) .18s both" }}
+            >
+              <div className="text-xs text-white/65">When do you usually wake up?</div>
+              <div className="mt-2 flex items-center gap-3">
+                <input
+                  className="w-16 rounded-xl border border-white/15 bg-white/5 px-2 py-2 text-center font-extrabold outline-none"
+                  type="text"
+                  inputMode="numeric"
+                  pattern="\\d*"
+                  value={state.wakeHour || ""}
+                  onChange={(e) => {
+                    const raw = (e.target as HTMLInputElement).value.replace(/\\D/g, "");
+                    if (raw.length > 2) return;
+                    setState((s) => ({ ...s, wakeHour: raw === "" ? 0 : Number(raw) }));
+                  }}
+                  onBlur={() => {
+                    const h = normalizeHourInput(String(state.wakeHour || 0));
+                    setState((s) => ({ ...s, wakeHour: h }));
+                  }}
+                />
+                <span className="text-white/40">:</span>
+                <input
+                  className="w-16 rounded-xl border border-white/15 bg-white/5 px-2 py-2 text-center font-extrabold outline-none"
+                  type="text"
+                  inputMode="numeric"
+                  pattern="\\d*"
+                  value={state.wakeMinute || state.wakeMinute === 0 ? String(state.wakeMinute).padStart(2, "0") : ""}
+                  onChange={(e) => {
+                    const raw = (e.target as HTMLInputElement).value.replace(/\\D/g, "");
+                    if (raw.length > 2) return;
+                    setState((s) => ({ ...s, wakeMinute: raw === "" ? 0 : Number(raw) }));
+                  }}
+                  onBlur={() => {
+                    const m = normalizeMinuteInput(String(state.wakeMinute || 0));
+                    setState((s) => ({ ...s, wakeMinute: m }));
+                  }}
+                />
+                <div className="ml-2 flex gap-2">
+                  {(["AM", "PM"] as const).map((p) => {
+                    const active = state.wakeMeridiem === p;
+                    return (
+                      <button
+                        key={p}
+                        onClick={() => setState((s) => ({ ...s, wakeMeridiem: toMeridiem(p) }))}
+                        className={
+                          "px-3 py-2 rounded-xl border text-xs font-extrabold " +
+                          (active ? "border-[#0A84FF]/60 bg-[#0A84FF]/20 text-white" : "border-white/15 bg-white/5 text-white/70")
+                        }
+                      >
+                        {p}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+              <div className="mt-1 text-[11px] text-white/45">Doesn’t have to be exact.</div>
+
+              <div className="mt-5 text-xs text-white/65">When do you usually go to sleep?</div>
+              <div className="mt-2 flex items-center gap-3">
+                <input
+                  className="w-16 rounded-xl border border-white/15 bg-white/5 px-2 py-2 text-center font-extrabold outline-none"
+                  type="text"
+                  inputMode="numeric"
+                  pattern="\\d*"
+                  value={state.sleepHour || ""}
+                  onChange={(e) => {
+                    const raw = (e.target as HTMLInputElement).value.replace(/\\D/g, "");
+                    if (raw.length > 2) return;
+                    setState((s) => ({ ...s, sleepHour: raw === "" ? 0 : Number(raw) }));
+                  }}
+                  onBlur={() => {
+                    const h = normalizeHourInput(String(state.sleepHour || 0));
+                    setState((s) => ({ ...s, sleepHour: h }));
+                  }}
+                />
+                <span className="text-white/40">:</span>
+                <input
+                  className="w-16 rounded-xl border border-white/15 bg-white/5 px-2 py-2 text-center font-extrabold outline-none"
+                  type="text"
+                  inputMode="numeric"
+                  pattern="\\d*"
+                  value={state.sleepMinute || state.sleepMinute === 0 ? String(state.sleepMinute).padStart(2, "0") : ""}
+                  onChange={(e) => {
+                    const raw = (e.target as HTMLInputElement).value.replace(/\\D/g, "");
+                    if (raw.length > 2) return;
+                    setState((s) => ({ ...s, sleepMinute: raw === "" ? 0 : Number(raw) }));
+                  }}
+                  onBlur={() => {
+                    const m = normalizeMinuteInput(String(state.sleepMinute || 0));
+                    setState((s) => ({ ...s, sleepMinute: m }));
+                  }}
+                />
+                <div className="ml-2 flex gap-2">
+                  {(["AM", "PM"] as const).map((p) => {
+                    const active = state.sleepMeridiem === p;
+                    return (
+                      <button
+                        key={p}
+                        onClick={() => setState((s) => ({ ...s, sleepMeridiem: toMeridiem(p) }))}
+                        className={
+                          "px-3 py-2 rounded-xl border text-xs font-extrabold " +
+                          (active ? "border-[#0A84FF]/60 bg-[#0A84FF]/20 text-white" : "border-white/15 bg-white/5 text-white/70")
+                        }
+                      >
+                        {p}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+              <div className="mt-1 text-[11px] text-white/45">Doesn’t have to be exact.</div>
+            </div>
+
+            <button
+              onClick={() => {
+                const { startMins, endMins } = hydrationWindowFromInputs(
+                  state.wakeHour,
+                  state.wakeMinute,
+                  state.wakeMeridiem,
+                  state.sleepHour,
+                  state.sleepMinute,
+                  state.sleepMeridiem
+                );
+                setState((s) => ({
+                  ...s,
+                  wakeMins: startMins,
+                  sleepMins: endMins,
+                }));
+                setStep(7);
+              }}
+              className="mt-6 w-full px-4 py-4 rounded-2xl bg-[#0A84FF] text-white font-extrabold active:scale-[0.99]"
+            >
+              Continue
+            </button>
+          </div>
+        )}
 
         {state.step === 6 && (
           <div>
@@ -2149,7 +2683,7 @@ export default function WaterBottleTracker() {
         )}
 
         {state.step === 7 && (
-          <div>
+          <div className="pt-6">
             <style>{`
               @keyframes setupIn { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
               @keyframes setupInSoft { from { opacity: 0; transform: translateY(8px) scale(0.99); } to { opacity: 1; transform: translateY(0) scale(1); } }
@@ -2310,6 +2844,7 @@ export default function WaterBottleTracker() {
           </div>
         )}
       </div>
+      {showMorningReset && <MorningResetModal onConfirm={handleMorningRefill} isClosing={morningResetClosing} />}
     </div>
   );
 }
