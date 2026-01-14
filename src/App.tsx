@@ -1,4 +1,6 @@
 import React, { useEffect, useId, useMemo, useRef, useState } from "react";
+import { Capacitor } from "@capacitor/core";
+import { Haptics, ImpactStyle } from "@capacitor/haptics";
 
 // Water Bottle Tracker — realistic onboarding + simple main UI (React + Tailwind)
 // Workflow:
@@ -374,6 +376,11 @@ function BottleVector({
   style,
   targetLevel,
   targetStatus,
+  onMeniscusPointerDown,
+  onMeniscusPointerMove,
+  onMeniscusPointerUp,
+  onMeniscusPointerCancel,
+  isMeniscusDragging = false,
   fillColor = "rgba(10,132,255,0.35)",
   edgeColor = "rgba(10,132,255,0.65)",
 }: {
@@ -383,6 +390,11 @@ function BottleVector({
   style?: React.CSSProperties;
   targetLevel?: number;
   targetStatus?: "behind" | "ahead";
+  onMeniscusPointerDown?: React.PointerEventHandler<SVGRectElement>;
+  onMeniscusPointerMove?: React.PointerEventHandler<SVGRectElement>;
+  onMeniscusPointerUp?: React.PointerEventHandler<SVGRectElement>;
+  onMeniscusPointerCancel?: React.PointerEventHandler<SVGRectElement>;
+  isMeniscusDragging?: boolean;
   fillColor?: string;
   edgeColor?: string;
 }) {
@@ -394,6 +406,8 @@ function BottleVector({
   const H = 300;
   const W = 140;
   const y = H - pct * H;
+  const edgePct = clamp(pct, 0.07, 0.95);
+  const edgeY = H - edgePct * H;
   const yTarget = clamp(H - targetPct * H, 6, H - 6);
   const targetStroke = targetStatus === "behind" ? "rgba(255,69,58,0.45)" : "rgba(34,197,94,0.45)";
 
@@ -405,13 +419,35 @@ function BottleVector({
         </clipPath>
         <style>{`
           @keyframes fadeOutLine { from { opacity: 1; } to { opacity: 0; } }
+          @keyframes meniscusBlink { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+          .meniscus-blink { animation: meniscusBlink 3s ease-in-out infinite; }
         `}</style>
       </defs>
 
       <g clipPath={`url(#clip-${id})`}>
         <rect x="0" y="0" width={W} height={H} fill="rgba(255,255,255,0.03)" />
         <rect x="0" y={y} width={W} height={pct * H} fill={fillColor} />
-        <rect x="10" y={Math.max(0, y - 2)} width={W - 20} height="2" fill={edgeColor} />
+        <rect
+          x="10"
+          y={Math.max(0, edgeY - (isMeniscusDragging ? 18 : 6) / 2)}
+          width={W - 20}
+          height={isMeniscusDragging ? 18 : 6}
+          fill={edgeColor}
+          className="meniscus-blink"
+        />
+        <rect
+          x="4"
+          y={Math.max(0, edgeY - 18)}
+          width={W - 8}
+          height="48"
+          fill="transparent"
+          pointerEvents="all"
+          style={{ cursor: "ns-resize", touchAction: "none" }}
+          onPointerDown={onMeniscusPointerDown}
+          onPointerMove={onMeniscusPointerMove}
+          onPointerUp={onMeniscusPointerUp}
+          onPointerCancel={onMeniscusPointerCancel}
+        />
         <line
           x1="10"
           x2={W - 10}
@@ -1301,9 +1337,11 @@ export default function WaterBottleTracker() {
     if (diffMl < -pacingToleranceMl) return "behind" as const;
     return diffMl >= 0 ? "ahead" : "behind";
   }, [diffMl, pacingToleranceMl]);
+  // === DO NOT EDIT: Expected FID line + flag interaction (locked) ===
+  // If you need changes here, warn before editing.
   const computeExpectedFillFrac = (expectedBottles: number, actualConsumedBottles: number) => {
     const behindBottles = expectedBottles - actualConsumedBottles;
-    if (behindBottles >= 1) return 0.03;
+    if (behindBottles >= 1) return 0.07;
     return 1 - (expectedBottles % 1);
   };
   const FLAG_OFFSET_POINTS = [
@@ -1329,17 +1367,29 @@ export default function WaterBottleTracker() {
     }
     return 0;
   };
+  const prevRemainingRef = useRef<number>(state.remaining);
+  useEffect(() => {
+    prevRemainingRef.current = state.remaining;
+  }, [state.remaining]);
   const targetLineRemainingFraction = useMemo(() => {
     if (state.bottleML <= 0) return state.remaining;
     const actualConsumedBottles = totalConsumed / state.bottleML;
-    const expectedFillFrac = computeExpectedFillFrac(expectedBottlesNow, actualConsumedBottles);
+    const behindBottles = expectedBottlesNow - actualConsumedBottles;
+    const hasCompletedBottle = state.completedBottles > 0;
+    let expectedFillFrac: number;
+    if (behindBottles >= 1) {
+      expectedFillFrac = 0.03;
+    } else {
+      expectedFillFrac = hasCompletedBottle ? 1 - (expectedBottlesNow % 1) : 0.03;
+    }
     return clamp(expectedFillFrac, 0, 1);
-  }, [expectedBottlesNow, totalConsumed, state.bottleML, state.remaining]);
+  }, [expectedBottlesNow, totalConsumed, state.bottleML, state.remaining, state.completedBottles]);
   const targetLineY = Math.round(300 - targetLineRemainingFraction * 300);
   const expectedBottlesForFlag = state.completedBottles > 0 ? expectedBottlesNow % 1 : expectedBottlesNow;
   const flagOffsetPx = flagOffsetForExpectedBottles(expectedBottlesForFlag);
   const flagTop = targetLineY + flagOffsetPx;
   const showFlag = expectedBottlesNow >= 0.05;
+  // === END DO NOT EDIT: Expected FID line + flag interaction ===
 
   function advanceBottle(s: AppState) {
     const n = ceilDiv(s.goalML, s.bottleML);
@@ -1429,8 +1479,8 @@ export default function WaterBottleTracker() {
     setLowLevelTracked(false);
   }
 
-  const dialRef = useRef<HTMLDivElement | null>(null);
-  const [dragging, setDragging] = useState(false);
+  const bottleWrapRef = useRef<HTMLDivElement | null>(null);
+  const [meniscusDragging, setMeniscusDragging] = useState(false);
 
   const [pendingRemaining, setPendingRemaining] = useState(state.remaining);
   useEffect(() => {
@@ -1443,6 +1493,7 @@ export default function WaterBottleTracker() {
   const [showLevelUpdated, setShowLevelUpdated] = useState(false);
   const levelUpdatedTimeoutRef = useRef<number | null>(null);
   const [lowLevelTracked, setLowLevelTracked] = useState(false);
+  const [showAnalytics, setShowAnalytics] = useState(false);
   const [lastMorningResetToken, setLastMorningResetToken] = useState<string | null>(() => {
     try {
       return localStorage.getItem("v3_lastMorningResetToken");
@@ -1463,6 +1514,7 @@ export default function WaterBottleTracker() {
       if (onboardingAbortRef.current) onboardingAbortRef.current.abort();
     };
   }, []);
+
 
 
   const checkMorningReset = () => {
@@ -1575,6 +1627,7 @@ export default function WaterBottleTracker() {
     setScanError(null);
     setScanMessage(null);
     setScanState("picking");
+    triggerTrackHaptic();
     fileInputRef.current?.click();
   }
 
@@ -1639,45 +1692,51 @@ export default function WaterBottleTracker() {
     })();
   }
 
-  function dialValueFromClientY(clientY: number) {
-    const el = dialRef.current;
-    if (!el) return state.remaining;
+  function setPendingFromBottlePointer(clientY: number) {
+    const el = bottleWrapRef.current;
+    if (!el) return;
     const rect = el.getBoundingClientRect();
     const padTop = 10;
     const padBot = 10;
     const y = clamp(clientY, rect.top + padTop, rect.bottom - padBot);
     const usable = rect.height - padTop - padBot;
     const ratio = 1 - (y - (rect.top + padTop)) / usable;
-
     const v = snapValue(ratio, state.snap);
-    return Math.min(v, state.remaining);
+    setPendingRemaining(Math.min(v, state.remaining));
   }
 
-  function onDialPointerDown(e: React.PointerEvent) {
+  function onMeniscusPointerDown(e: React.PointerEvent<SVGRectElement>) {
     e.preventDefault();
-    setDragging(true);
+    e.currentTarget.setPointerCapture(e.pointerId);
+    document.body.style.webkitUserSelect = "none";
+    document.body.style.setProperty("-webkit-touch-callout", "none");
+    setMeniscusDragging(true);
     setLowLevelTracked(false);
-    setPendingRemaining(dialValueFromClientY(e.clientY));
+    triggerMeniscusHaptic();
   }
 
-  function onDialPointerMove(e: PointerEvent) {
-    if (!dragging) return;
+  function onMeniscusPointerMove(e: React.PointerEvent<SVGRectElement>) {
+    if (!meniscusDragging) return;
+    e.preventDefault();
     setLowLevelTracked(false);
-    setPendingRemaining(dialValueFromClientY(e.clientY));
+    setPendingFromBottlePointer(e.clientY);
   }
 
-  function onDialPointerUp() {
-    setDragging(false);
+  function onMeniscusPointerUp(e: React.PointerEvent<SVGRectElement>) {
+    if (!meniscusDragging) return;
+    setMeniscusDragging(false);
+    document.body.style.webkitUserSelect = "";
+    document.body.style.removeProperty("-webkit-touch-callout");
+    e.currentTarget.releasePointerCapture(e.pointerId);
   }
 
-  useEffect(() => {
-    window.addEventListener("pointermove", onDialPointerMove);
-    window.addEventListener("pointerup", onDialPointerUp);
-    return () => {
-      window.removeEventListener("pointermove", onDialPointerMove);
-      window.removeEventListener("pointerup", onDialPointerUp);
-    };
-  }, [dragging, state.remaining, state.snap]);
+  function onMeniscusPointerCancel(e: React.PointerEvent<SVGRectElement>) {
+    if (!meniscusDragging) return;
+    setMeniscusDragging(false);
+    document.body.style.webkitUserSelect = "";
+    document.body.style.removeProperty("-webkit-touch-callout");
+    e.currentTarget.releasePointerCapture(e.pointerId);
+  }
 
   useEffect(() => {
     return () => {
@@ -1723,14 +1782,6 @@ export default function WaterBottleTracker() {
 
   const remainingPct = Math.round(pendingRemaining * 100);
   const isLowWater = pendingRemaining <= 0.1;
-
-  const dialThumbTop = useMemo(() => {
-    const H = 260;
-    const padTop = 10;
-    const padBot = 10;
-    const usable = H - padTop - padBot;
-    return padTop + (1 - pendingRemaining) * usable;
-  }, [pendingRemaining]);
 
   const [showQuickAdd, setShowQuickAdd] = useState(false);
   const [wakeHourInput, setWakeHourInput] = useState(() => String(timeParts(state.wakeMins).h12));
@@ -1784,6 +1835,24 @@ export default function WaterBottleTracker() {
     setLowLevelTracked(false);
   }
 
+  function triggerTrackHaptic() {
+    if (!Capacitor.isNativePlatform()) return;
+    try {
+      void Haptics.impact({ style: ImpactStyle.Light });
+    } catch {
+      // ignore for web/simulators
+    }
+  }
+
+  function triggerMeniscusHaptic() {
+    if (!Capacitor.isNativePlatform()) return;
+    try {
+      void Haptics.impact({ style: ImpactStyle.Light });
+    } catch {
+      // ignore for web/simulators
+    }
+  }
+
   function handleMorningRefill() {
     setMorningResetClosing(true);
     window.setTimeout(() => {
@@ -1828,10 +1897,73 @@ export default function WaterBottleTracker() {
   }
 
   if (state.hasOnboarded && state.step === 0) {
+    if (showAnalytics) {
+      return (
+        <div className="min-h-screen bg-[#0B0B0F] text-white select-none" style={{ paddingTop: "calc(env(safe-area-inset-top) + 16px)" }}>
+          <style>{`
+            html, body { scrollbar-width: none; -ms-overflow-style: none; }
+            html::-webkit-scrollbar, body::-webkit-scrollbar { display: none; width: 0; height: 0; }
+          `}</style>
+          <div className="px-5 pt-6 pb-5">
+            <div className="flex items-start justify-between gap-3">
+              <div className="text-2xl font-extrabold">Analytics</div>
+              <button
+                onClick={() => setShowAnalytics(false)}
+                className="h-10 w-10 rounded-2xl border border-white/12 bg-white/8 active:bg-white/12 flex items-center justify-center"
+                aria-label="Close analytics"
+                title="Close"
+              >
+                ✕
+              </button>
+            </div>
+          </div>
+
+          <div className="px-5">
+            <div className="mt-8">
+              <div className="flex items-end justify-between">
+                <div className="text-sm text-white/70">Daily progress • Bottle {state.bottleML} ml</div>
+                <div className="text-sm font-extrabold tabular-nums">
+                  {totalConsumed} / {state.goalML} ml
+                </div>
+              </div>
+              <div className="mt-2 h-3 rounded-full bg-white/10 overflow-hidden">
+                <div className="h-full rounded-full bg-[#0A84FF]" style={{ width: `${Math.round(progressFrac * 100)}%`, transition: "width .15s ease" }} />
+              </div>
+              <div className="mt-2 text-xs text-white/55">Tip: scroll down to 0% when you finish the bottle — it will auto-start the next one.</div>
+              <div className="mt-1 text-xs italic text-[#FF453A]/70">Artwork will be updated in the next build.</div>
+              <div className="mt-2 text-xs text-white/50">
+                Resets in <span className="font-extrabold tabular-nums text-white/70">{formatCountdown(resetMs)}</span>
+              </div>
+              <div className="mt-1 text-xs text-white/50">
+                Yesterday:{" "}
+                {(() => {
+                  const y = (state.dailyLog || {})[prevDayKeyBySleep(new Date(), state.sleepMins)];
+                  if (!y) return <span className="text-white/40">—</span>;
+                  const pct = y.goalML > 0 ? Math.round((y.consumedML / y.goalML) * 100) : 0;
+                  return (
+                    <span className="font-extrabold tabular-nums text-white/70">
+                      {y.consumedML} / {y.goalML} ml ({pct}%)
+                    </span>
+                  );
+                })()}
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
     return (
-      <div className="min-h-screen bg-[#0B0B0F] pb-[110px] text-white select-none">
+      <div
+        className="h-screen overflow-hidden bg-[#0B0B0F] pb-[110px] text-white select-none no-scrollbar"
+        style={{ paddingTop: "calc(env(safe-area-inset-top) + 16px)" }}
+      >
         <style>{`
           @keyframes fadeOutLineUi { from { opacity: 1; } to { opacity: 0; } }
+          .no-scrollbar { scrollbar-width: none; -ms-overflow-style: none; }
+          .no-scrollbar::-webkit-scrollbar { display: none; width: 0; height: 0; }
+          html, body { scrollbar-width: none; -ms-overflow-style: none; }
+          html::-webkit-scrollbar, body::-webkit-scrollbar { display: none; width: 0; height: 0; }
         `}</style>
         {showQuickAdd && <QuickAddSheet onClose={() => setShowQuickAdd(false)} onAdd={addExtra} />}
 
@@ -1873,7 +2005,7 @@ export default function WaterBottleTracker() {
           </div>
         )}
 
-        <div className="px-5 pt-7 pb-5">
+        <div className="px-5 pt-12 pb-5">
           <div className="flex items-start justify-between gap-3">
             <div className="flex-1 text-center">
               <div className="text-5xl font-extrabold leading-tight">
@@ -1897,7 +2029,7 @@ export default function WaterBottleTracker() {
                   Water level updated
                 </span>
               </div>
-              <div className="mt-2 text-xs text-white/45">
+              <div className="mt-2 text-xs text-white/45 hidden">
                 {(() => {
                   const now = new Date();
                   const timeStr = formatClock12h(now);
@@ -1913,19 +2045,36 @@ export default function WaterBottleTracker() {
         </div>
 
         <div className="px-5">
-          <div className="flex items-center justify-center gap-6">
-            <div className="relative h-[300px]" style={{ marginLeft: "-3px" }}>
+          <div
+            className="flex flex-col items-center justify-center gap-0 select-none"
+            style={{ WebkitUserSelect: "none", WebkitTouchCallout: "none" }}
+            onContextMenu={(e) => e.preventDefault()}
+          >
+            <div className="text-lg font-extrabold tabular-nums mb-[10px]">{remainingPct}%</div>
+
+            <div
+              ref={bottleWrapRef}
+              className="relative h-[300px] select-none overflow-visible"
+              style={{
+                touchAction: "none",
+                WebkitUserSelect: "none",
+                WebkitTouchCallout: "none",
+                transform: "scale(1.2)",
+                transformOrigin: "center",
+              }}
+              onContextMenu={(e) => e.preventDefault()}
+            >
               {showFlag && (
                 <div
                   className={
-                  "absolute left-[3px] text-2xl font-extrabold leading-none " +
+                    "absolute left-[3px] text-2xl font-extrabold leading-none " +
                     (pacingStatus === "behind" ? "text-[#FF453A]" : "text-green-400")
                   }
-                style={{
-                  top: `${flagTop}px`,
-                  animation: pacingStatus === "ahead" ? "fadeOutLineUi 0.6s ease forwards" : undefined,
-                }}
-              >
+                  style={{
+                    top: `${flagTop}px`,
+                    animation: pacingStatus === "ahead" ? "fadeOutLineUi 0.6s ease forwards" : undefined,
+                  }}
+                >
                   🏁
                 </div>
               )}
@@ -1935,81 +2084,40 @@ export default function WaterBottleTracker() {
                 className={shapeClasses(state.shape)}
                 targetLevel={targetLineRemainingFraction}
                 targetStatus={pacingStatus}
+                onMeniscusPointerDown={onMeniscusPointerDown}
+                onMeniscusPointerMove={onMeniscusPointerMove}
+                onMeniscusPointerUp={onMeniscusPointerUp}
+                onMeniscusPointerCancel={onMeniscusPointerCancel}
+                isMeniscusDragging={meniscusDragging}
               />
             </div>
 
-            <div className="flex flex-col items-center gap-3">
-              <div className="flex flex-col items-start gap-3">
-                <div className="w-16 text-center text-lg font-extrabold tabular-nums">{remainingPct}%</div>
-
-                <div className="grid grid-cols-[4rem,3rem] gap-3 items-start">
-                  <div
-                    ref={dialRef}
-                    onPointerDown={onDialPointerDown}
-                    className="relative h-[260px] w-16 rounded-2xl border border-white/15 bg-white/6 overflow-hidden select-none touch-none"
-                    role="slider"
-                    aria-label="Bottle level"
-                    aria-valuemin={0}
-                    aria-valuemax={100}
-                    aria-valuenow={remainingPct}
-                    tabIndex={0}
-                    onKeyDown={(e) => {
-                      const step = state.snap === "tenths" ? 0.1 : state.snap === "free" ? 0.01 : 0.25;
-                      if (e.key === "ArrowUp") {
-                        e.preventDefault();
-                        setPendingRemaining((p) => Math.min(snapValue(p + step, state.snap), state.remaining));
-                      }
-                      if (e.key === "ArrowDown") {
-                        e.preventDefault();
-                        setPendingRemaining((p) => snapValue(p - step, state.snap));
-                      }
-                    }}
-                  >
-                    <div className="absolute inset-y-2 left-[18px] right-[18px] rounded-xl bg-white/8" />
-                    <div className="absolute inset-y-2 left-0 right-0 flex flex-col justify-between pointer-events-none">
-                      {Array.from({ length: 21 }).map((_, i) => {
-                        const major = i % 5 === 0;
-                        return (
-                          <div key={i} className="flex justify-center">
-                            <span className={`block h-px ${major ? "w-8 bg-white/45" : "w-[22px] bg-white/25"}`} />
-                          </div>
-                        );
-                      })}
-                    </div>
-                    <div
-                      className="absolute left-1/2 h-[6px] w-[38px] -translate-x-1/2 rounded-full bg-white/90"
-                      style={{ top: `${dialThumbTop}px` }}
-                    />
-                  </div>
-
-                  <button
-                    onClick={() => setShowQuickAdd(true)}
-                    className="col-start-2 self-center h-12 w-12 rounded-2xl border border-white/10 bg-white/6 active:scale-[0.99] flex items-center justify-center"
-                    aria-label="Add water"
-                    title="Add water"
-                  >
-                    <DropletPlugIcon className="h-8 w-8" />
-                  </button>
-
-                  <button
-                    onClick={undo}
-                    disabled={!state.history || state.history.length === 0}
-                    className="col-start-1 w-16 px-0 py-2 rounded-2xl border border-white/15 bg-white/8 font-extrabold text-center disabled:opacity-40"
-                  >
-                    Undo
-                  </button>
-
-                  {state.extraML > 0 && (
-                    <div className="col-start-1 col-span-2 justify-self-start text-left text-[12px] font-extrabold tabular-nums text-white/55 whitespace-nowrap">
-                      Extra today: <span className="text-[#0A84FF]">+{Math.round(state.extraML)}ml</span>
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>
           </div>
 
-          <div className="mt-5 flex flex-col items-center gap-2">
+          <div className="mt-10 mb-[96px] flex flex-col items-center gap-2">
+            <div className="flex items-center justify-center gap-3">
+              <button
+                onClick={undo}
+                disabled={!state.history || state.history.length === 0}
+                className="h-10 px-5 rounded-2xl border border-white/15 bg-white/8 font-extrabold text-center disabled:opacity-40"
+              >
+                Undo
+              </button>
+              <button
+                onClick={() => setShowQuickAdd(true)}
+                className="h-10 w-10 rounded-2xl border border-white/10 bg-white/6 active:scale-[0.99] flex items-center justify-center"
+                aria-label="Add water"
+                title="Add water"
+              >
+                <DropletPlugIcon className="h-7 w-7" />
+              </button>
+            </div>
+
+            {state.extraML > 0 && (
+              <div className="text-[12px] font-extrabold tabular-nums text-white/55 whitespace-nowrap">
+                Extra today: <span className="text-[#0A84FF]">+{Math.round(state.extraML)}ml</span>
+              </div>
+            )}
             <input
               ref={fileInputRef}
               type="file"
@@ -2022,7 +2130,7 @@ export default function WaterBottleTracker() {
               onClick={startScanPick}
               disabled={scanState === "scanning" || scanCooldownLeftMs > 0}
               className={
-                "w-full max-w-md px-5 py-3 rounded-2xl font-extrabold active:scale-[0.99] transition " +
+                "mt-2 w-full max-w-md px-5 py-3 rounded-2xl font-extrabold active:scale-[0.99] transition " +
                 (scanState === "scanning" ? "bg-green-500/50 text-black/70" : "bg-green-500 text-black")
               }
             >
@@ -2041,40 +2149,12 @@ export default function WaterBottleTracker() {
             {scanError && <div className="text-xs text-[#FF453A]">{scanError}</div>}
           </div>
 
-          <div className="mt-8">
-            <div className="flex items-end justify-between">
-              <div className="text-sm text-white/70">Daily progress • Bottle {state.bottleML} ml</div>
-              <div className="text-sm font-extrabold tabular-nums">
-                {totalConsumed} / {state.goalML} ml
-              </div>
-            </div>
-            <div className="mt-2 h-3 rounded-full bg-white/10 overflow-hidden">
-              <div className="h-full rounded-full bg-[#0A84FF]" style={{ width: `${Math.round(progressFrac * 100)}%`, transition: "width .15s ease" }} />
-            </div>
-            <div className="mt-2 text-xs text-white/55">Tip: scroll down to 0% when you finish the bottle — it will auto-start the next one.</div>
-            <div className="mt-1 text-xs italic text-[#FF453A]/70">Artwork will be updated in the next build.</div>
-            <div className="mt-2 text-xs text-white/50">
-              Resets in <span className="font-extrabold tabular-nums text-white/70">{formatCountdown(resetMs)}</span>
-            </div>
-            <div className="mt-1 text-xs text-white/50">
-              Yesterday:{" "}
-                {(() => {
-                  const y = (state.dailyLog || {})[prevDayKeyBySleep(new Date(), state.sleepMins)];
-                  if (!y) return <span className="text-white/40">—</span>;
-                  const pct = y.goalML > 0 ? Math.round((y.consumedML / y.goalML) * 100) : 0;
-                  return (
-                  <span className="font-extrabold tabular-nums text-white/70">
-                    {y.consumedML} / {y.goalML} ml ({pct}%)
-                  </span>
-                );
-              })()}
-            </div>
-          </div>
         </div>
         <BottomNavBar
           onOpenSettings={() => setState((s) => ({ ...s, step: 6 }))}
-          onOpenAnalytics={() => {}}
+          onOpenAnalytics={() => setShowAnalytics(true)}
           onTrack={() => {
+            triggerTrackHaptic();
             commitScanToDailyProgress(pendingRemaining);
             if (isLowWater) setLowLevelTracked(true);
             if (levelUpdatedTimeoutRef.current) window.clearTimeout(levelUpdatedTimeoutRef.current);
@@ -2086,7 +2166,11 @@ export default function WaterBottleTracker() {
           }}
           isTrackDisabled={Math.abs(pendingRemaining - state.remaining) < 1e-6}
           isRefill={isLowWater && lowLevelTracked}
-          onRefill={handleRefill}
+          onRefill={() => {
+            triggerTrackHaptic();
+            handleRefill();
+          }}
+          isAnalyticsEnabled
         />
         {showMorningReset && <MorningResetModal onConfirm={handleMorningRefill} isClosing={morningResetClosing} />}
       </div>
