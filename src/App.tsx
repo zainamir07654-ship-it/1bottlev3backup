@@ -1,6 +1,7 @@
 import React, { useEffect, useId, useMemo, useRef, useState } from "react";
 import { Capacitor } from "@capacitor/core";
 import { Haptics, ImpactStyle } from "@capacitor/haptics";
+import { LocalNotifications } from "@capacitor/local-notifications";
 
 // Water Bottle Tracker — realistic onboarding + simple main UI (React + Tailwind)
 // Workflow:
@@ -182,26 +183,26 @@ function ceilDiv(a: number, b: number) {
   return b <= 0 ? 0 : Math.ceil(a / b);
 }
 
-function sleepBoundaryMins(sleepMins: number) {
-  const m = Math.round(sleepMins);
+function wakeBoundaryMins(wakeMins: number) {
+  const m = Math.round(wakeMins);
   return ((m % 1440) + 1440) % 1440;
 }
 
-function dayKeyBySleep(d: Date = new Date(), sleepMins: number) {
-  const boundary = sleepBoundaryMins(sleepMins);
+function dayKeyByWake(d: Date = new Date(), wakeMins: number) {
+  const boundary = wakeBoundaryMins(wakeMins);
   const shifted = new Date(d.getTime() - boundary * 60 * 1000);
   return dayKey(shifted);
 }
 
-function prevDayKeyBySleep(d: Date = new Date(), sleepMins: number) {
-  const boundary = sleepBoundaryMins(sleepMins);
+function prevDayKeyByWake(d: Date = new Date(), wakeMins: number) {
+  const boundary = wakeBoundaryMins(wakeMins);
   const shifted = new Date(d.getTime() - boundary * 60 * 1000);
   shifted.setDate(shifted.getDate() - 1);
   return dayKey(shifted);
 }
 
-function msUntilNextSleep(d: Date = new Date(), sleepMins: number) {
-  const boundary = sleepBoundaryMins(sleepMins);
+function msUntilNextWake(d: Date = new Date(), wakeMins: number) {
+  const boundary = wakeBoundaryMins(wakeMins);
   const next = new Date(d);
   next.setHours(0, 0, 0, 0);
   next.setMinutes(boundary, 0, 0);
@@ -409,7 +410,7 @@ function BottleVector({
   const edgePct = clamp(pct, 0.07, 0.95);
   const edgeY = H - edgePct * H;
   const yTarget = clamp(H - targetPct * H, 6, H - 6);
-  const targetStroke = targetStatus === "behind" ? "rgba(255,69,58,0.45)" : "rgba(34,197,94,0.45)";
+  const targetStroke = "rgba(255,255,255,0.35)";
 
   return (
     <svg viewBox="0 0 140 300" className={`h-[300px] ${className || ""}`} style={style} aria-hidden="true">
@@ -506,7 +507,7 @@ function makeDefaultState() {
     sleepMeridiem: "PM" as Meridiem,
 
 
-    dayKey: dayKeyBySleep(new Date(), 1320),
+    dayKey: dayKeyByWake(new Date(), 480),
     completedBottles: 0,
     remaining: 1,
 
@@ -514,9 +515,33 @@ function makeDefaultState() {
     extraML: 0,
     onboardingScanPercent: null as null | number,
     onboardingScanFraction: null as null | number,
-    dailyLog: {} as Record<string, { consumedML: number; goalML: number; bottleML: number; carryML: number; extraML: number; at: number }>, 
+    dailyLog: {} as Record<
+      string,
+      {
+        consumedML: number;
+        goalML: number;
+        bottleML: number;
+        carryML: number;
+        extraML: number;
+        at: number;
+        windowHitCounts?: number[];
+        windowHits?: boolean[];
+        windowTotalsMl?: number[];
+        lastEventAt?: number;
+      }
+    >,
 
-    history: [] as Array<{ t: number; prevRemaining: number; prevCompleted: number; prevCarry: number; prevExtra: number; action?: string; ml?: number }>,
+    history: [] as Array<{
+      t: number;
+      prevRemaining: number;
+      prevCompleted: number;
+      prevCarry: number;
+      prevExtra: number;
+      action?: string;
+      ml?: number;
+      rhythmWindowIndex?: 0 | 1 | 2 | 3 | 4;
+      rhythmDelta?: number;
+    }>,
 
 
     celebrate: null as null | { type: "bottle" | "goal"; pct: number; consumedML: number },
@@ -1158,6 +1183,58 @@ export default function WaterBottleTracker() {
     runSelfTests();
   }, []);
 
+  const computeDebloatEloBreakdown = (s: AppState) => {
+    const keys = Object.keys(s.dailyLog || {}).sort();
+    const oldest = keys[0] || null;
+    const newest = keys[keys.length - 1] || null;
+    const weights = [18, 16, 14, 12, 10];
+    const last7DayKeys = Array.from({ length: 7 }, (_, i) => {
+      const d = new Date();
+      d.setDate(d.getDate() - (6 - i));
+      return dayKeyByWake(d, s.wakeMins);
+    });
+    const days = last7DayKeys.map((k) => {
+      const day = (s.dailyLog || {})[k];
+      const windowHitCounts = Array.isArray(day?.windowHitCounts) && day.windowHitCounts.length === 5
+        ? day.windowHitCounts
+        : Array.isArray(day?.windowHits) && day.windowHits.length === 5
+          ? day.windowHits.map((hit: boolean) => (hit ? 1 : 0))
+          : [0, 0, 0, 0, 0];
+      const hits = windowHitCounts.map((count: number) => count > 0);
+      const spreadScore = hits.reduce((sum: number, hit: boolean, idx: number) => (hit ? sum + weights[idx] : sum), 0);
+      const pct = day?.goalML ? Number(((day.consumedML || 0) / day.goalML).toFixed(2)) : 0;
+      const volumeScore = pct < 0.4 ? 0 : pct < 0.6 ? 10 : pct < 0.8 ? 20 : 30;
+      return {
+        dayKey: k,
+        consumedML: day?.consumedML ?? 0,
+        goalML: day?.goalML ?? 0,
+        pctOfGoal: pct,
+        windowHitCounts,
+        windowHits: hits,
+        spreadScore,
+        volumeScore,
+        dailyScore: spreadScore + volumeScore,
+      };
+    });
+    const debloatElo = Math.round(days.reduce((sum, d) => sum + d.dailyScore, 0) / 7);
+    return { debloatElo, days, last7DayKeys, oldest, newest, count: keys.length, weights };
+  };
+
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    const breakdown = computeDebloatEloBreakdown(state);
+    console.log("[DEV] dailyLogDaysStored:", breakdown.count, "oldest:", breakdown.oldest, "newest:", breakdown.newest);
+    console.log(
+      "[DEV] debloatElo:",
+      breakdown.debloatElo,
+      "last7DayKeys:",
+      breakdown.last7DayKeys,
+      "last7DailyScores:",
+      breakdown.days.map((d) => d.dailyScore)
+    );
+    console.log("[DEV] debloatElo breakdown:", breakdown.days);
+  }, []);
+
   // FID_VERIFY_START
   useEffect(() => {
     if (!import.meta.env.DEV) return;
@@ -1216,7 +1293,7 @@ export default function WaterBottleTracker() {
 
   useEffect(() => {
     const resetToTodayIfNeeded = () => {
-      const today = dayKeyBySleep(new Date(), stateRef.current.sleepMins);
+      const today = dayKeyByWake(new Date(), stateRef.current.wakeMins);
       setState((s) => {
         if (s.dayKey === today) return s;
 
@@ -1235,7 +1312,7 @@ export default function WaterBottleTracker() {
         };
 
         const keys = Object.keys(nextLog).sort();
-        const keep = keys.slice(-14);
+        const keep = keys.slice(-365);
         const pruned: AppState["dailyLog"] = {};
         for (const k of keep) pruned[k] = nextLog[k];
 
@@ -1259,7 +1336,7 @@ export default function WaterBottleTracker() {
 
     let timeoutId: number | undefined;
     const scheduleNext = () => {
-      const ms = msUntilNextSleep(new Date(), stateRef.current.sleepMins);
+      const ms = msUntilNextWake(new Date(), stateRef.current.wakeMins);
       timeoutId = window.setTimeout(() => {
         resetToTodayIfNeeded();
         scheduleNext();
@@ -1292,9 +1369,9 @@ export default function WaterBottleTracker() {
     persistNow(state);
   }, [state]);
 
-  const [resetMs, setResetMs] = useState(() => msUntilNextSleep(new Date(), state.sleepMins));
+  const [resetMs, setResetMs] = useState(() => msUntilNextWake(new Date(), state.wakeMins));
   useEffect(() => {
-    const tick = () => setResetMs(msUntilNextSleep(new Date(), state.sleepMins));
+    const tick = () => setResetMs(msUntilNextWake(new Date(), state.wakeMins));
     tick();
     const id = window.setInterval(tick, 1000);
     const onVis = () => {
@@ -1379,6 +1456,8 @@ export default function WaterBottleTracker() {
     let expectedFillFrac: number;
     if (behindBottles >= 1) {
       expectedFillFrac = 0.03;
+    } else if (expectedBottlesNow < 1) {
+      expectedFillFrac = 1 - (expectedBottlesNow % 1);
     } else {
       expectedFillFrac = hasCompletedBottle ? 1 - (expectedBottlesNow % 1) : 0.03;
     }
@@ -1403,7 +1482,7 @@ export default function WaterBottleTracker() {
 
   function setRemaining(nextRemaining: number, meta: { action?: string } = {}) {
     setState((s) => {
-      const today = dayKeyBySleep(new Date(), s.sleepMins);
+      const today = dayKeyByWake(new Date(), s.wakeMins);
       let ss = s;
       if (ss.dayKey !== today) {
         ss = { ...ss, dayKey: today, completedBottles: 0, remaining: 1, carryML: 0, extraML: 0, history: [], celebrate: null };
@@ -1413,18 +1492,40 @@ export default function WaterBottleTracker() {
       const prevCompleted = ss.completedBottles;
       const prevCarry = (ss.carryML || 0) as number;
       const prevExtra = (ss.extraML || 0) as number;
+      const beforeConsumed = totalConsumedFromState(ss);
+      const eventAt = Date.now();
       const r = clamp(nextRemaining, 0, 1);
-      const entry = { t: Date.now(), prevRemaining: prev, prevCompleted, prevCarry, prevExtra, ...meta };
-      const history = [...(ss.history || []), entry].slice(-50);
 
       const didEmptyBottle = meta.action === "track" && prev > 0.0001 && r <= 0.0001;
 
-      let nextState: AppState = { ...ss, remaining: r, history };
-      if (r <= 0.0001) nextState = { ...advanceBottle(nextState), history };
+      let nextState: AppState = { ...ss, remaining: r };
+      if (r <= 0.0001) nextState = { ...advanceBottle(nextState) };
 
       const afterConsumed = totalConsumedFromState(nextState);
       const pct = nextState.goalML > 0 ? Math.round((afterConsumed / nextState.goalML) * 100) : 0;
       const hitGoal = meta.action === "track" && nextState.goalML > 0 && afterConsumed >= nextState.goalML;
+
+      const rhythmDelta = Math.max(0, afterConsumed - beforeConsumed);
+      const rhythmWindowIndex =
+        rhythmDelta >= 120 ? getRhythmWindowIndexForDayKey(eventAt, dayKeyByWake(new Date(eventAt), ss.wakeMins), ss.wakeMins, ss.sleepMins) : undefined;
+      const entry = {
+        t: eventAt,
+        prevRemaining: prev,
+        prevCompleted,
+        prevCarry,
+        prevExtra,
+        ...meta,
+        ...(typeof rhythmWindowIndex === "number" ? { rhythmWindowIndex, rhythmDelta: 1 } : {}),
+      };
+      const history = [...(ss.history || []), entry].slice(-50);
+      nextState = { ...nextState, history };
+
+      if (meta.action === "track") {
+        nextState = {
+          ...nextState,
+          dailyLog: updateDailyLogRhythm(nextState, eventAt, rhythmDelta),
+        };
+      }
 
       if (meta.action === "track" && (hitGoal || didEmptyBottle)) {
         nextState = {
@@ -1443,7 +1544,7 @@ export default function WaterBottleTracker() {
 
   function addExtra(ml: number) {
     setState((s) => {
-      const today = dayKeyBySleep(new Date(), s.sleepMins);
+      const today = dayKeyByWake(new Date(), s.wakeMins);
       let ss = s;
       if (ss.dayKey !== today) {
         ss = { ...ss, dayKey: today, completedBottles: 0, remaining: 1, carryML: 0, extraML: 0, history: [], celebrate: null };
@@ -1455,11 +1556,28 @@ export default function WaterBottleTracker() {
       const prevExtra = (ss.extraML || 0) as number;
 
       const nextExtra = clamp((ss.extraML || 0) + ml, 0, 100000);
-      const entry = { t: Date.now(), prevRemaining: prev, prevCompleted, prevCarry, prevExtra, action: "extra", ml };
+      const eventAt = Date.now();
+      const rhythmWindowIndex =
+        ml >= 120 ? getRhythmWindowIndexForDayKey(eventAt, dayKeyByWake(new Date(eventAt), ss.wakeMins), ss.wakeMins, ss.sleepMins) : undefined;
+      const entry = {
+        t: eventAt,
+        prevRemaining: prev,
+        prevCompleted,
+        prevCarry,
+        prevExtra,
+        action: "extra",
+        ml,
+        ...(typeof rhythmWindowIndex === "number" ? { rhythmWindowIndex, rhythmDelta: 1 } : {}),
+      };
       const history = [...(ss.history || []), entry].slice(-50);
 
-      return { ...ss, extraML: nextExtra, history };
+      const next = { ...ss, extraML: nextExtra, history };
+      return { ...next, dailyLog: updateDailyLogRhythm(next, eventAt, ml) };
     });
+    setLastRefillOrLogDayKey(getTodayKey());
+    setLastRefillOrLogAt(Date.now());
+    void cancelBehindNudge();
+    void cancelLateBehindNudge();
   }
 
   function undo() {
@@ -1467,7 +1585,7 @@ export default function WaterBottleTracker() {
       const h = s.history || [];
       if (h.length === 0) return s;
       const last = h[h.length - 1];
-      return {
+      const nextState = {
         ...s,
         remaining: last.prevRemaining,
         completedBottles: last.prevCompleted,
@@ -1475,6 +1593,36 @@ export default function WaterBottleTracker() {
         extraML: typeof last.prevExtra === "number" ? last.prevExtra : s.extraML,
         history: h.slice(0, -1),
       };
+      if (typeof last.rhythmWindowIndex === "number") {
+        const eventAt = typeof last.t === "number" ? last.t : Date.now();
+        const key = dayKeyByWake(new Date(eventAt), nextState.wakeMins);
+        const day = (nextState.dailyLog || {})[key];
+        const windowHitCounts = Array.isArray(day?.windowHitCounts) && day.windowHitCounts.length === 5
+          ? [...day.windowHitCounts]
+          : Array.isArray(day?.windowHits) && day.windowHits.length === 5
+            ? day.windowHits.map((hit: boolean) => (hit ? 1 : 0))
+            : [0, 0, 0, 0, 0];
+        const delta = typeof last.rhythmDelta === "number" ? last.rhythmDelta : 1;
+        windowHitCounts[last.rhythmWindowIndex] = Math.max(0, windowHitCounts[last.rhythmWindowIndex] - delta);
+        const dailyLog = {
+          ...(nextState.dailyLog || {}),
+          [key]: {
+            consumedML: totalConsumedFromState(nextState),
+            goalML: day?.goalML ?? nextState.goalML,
+            bottleML: day?.bottleML ?? nextState.bottleML,
+            carryML: day?.carryML ?? nextState.carryML,
+            extraML: day?.extraML ?? nextState.extraML,
+            at: day?.at ?? eventAt,
+            windowHitCounts,
+            lastEventAt: eventAt,
+          },
+        };
+        if (import.meta.env.DEV) {
+          console.log("[DEV] Undo rhythm decrement", { windowIndex: last.rhythmWindowIndex, windowHitCounts });
+        }
+        return { ...nextState, dailyLog };
+      }
+      return nextState;
     });
     setLowLevelTracked(false);
   }
@@ -1499,6 +1647,80 @@ export default function WaterBottleTracker() {
       return localStorage.getItem("v3_lastMorningResetToken");
     } catch {
       return null;
+    }
+  });
+  const [lastAppOpenDayKey, setLastAppOpenDayKey] = useState<string | null>(() => {
+    try {
+      return localStorage.getItem("v3_lastAppOpenDayKey");
+    } catch {
+      return null;
+    }
+  });
+  const [lastRefillOrLogDayKey, setLastRefillOrLogDayKey] = useState<string | null>(() => {
+    try {
+      return localStorage.getItem("v3_lastRefillOrLogDayKey");
+    } catch {
+      return null;
+    }
+  });
+  const [lastRefillOrLogAt, setLastRefillOrLogAt] = useState<number | null>(() => {
+    try {
+      const raw = localStorage.getItem("v3_lastRefillOrLogAt");
+      return raw ? Number(raw) : null;
+    } catch {
+      return null;
+    }
+  });
+  const [lastBehindNudgeDayKey, setLastBehindNudgeDayKey] = useState<string | null>(() => {
+    try {
+      return localStorage.getItem("v3_lastBehindNudgeDayKey");
+    } catch {
+      return null;
+    }
+  });
+  const [behindNudgeScheduledDayKey, setBehindNudgeScheduledDayKey] = useState<string | null>(() => {
+    try {
+      return localStorage.getItem("v3_behindNudgeScheduledDayKey");
+    } catch {
+      return null;
+    }
+  });
+  const [behindNudgeScheduledAtMs, setBehindNudgeScheduledAtMs] = useState<number | null>(() => {
+    try {
+      const raw = localStorage.getItem("v3_behindNudgeScheduledAtMs");
+      return raw ? Number(raw) : null;
+    } catch {
+      return null;
+    }
+  });
+  const [lastEarlyBehindFiredAt, setLastEarlyBehindFiredAt] = useState<number | null>(() => {
+    try {
+      const raw = localStorage.getItem("v3_lastEarlyBehindFiredAt");
+      return raw ? Number(raw) : null;
+    } catch {
+      return null;
+    }
+  });
+  const [lastLateBehindDayKey, setLastLateBehindDayKey] = useState<string | null>(() => {
+    try {
+      return localStorage.getItem("v3_lastLateBehindDayKey");
+    } catch {
+      return null;
+    }
+  });
+  const [lastPraiseDateKey, setLastPraiseDateKey] = useState<string | null>(() => {
+    try {
+      return localStorage.getItem("v3_lastPraiseDateKey");
+    } catch {
+      return null;
+    }
+  });
+  const [notifPromptPending, setNotifPromptPending] = useState(false);
+  const [notifPrompted, setNotifPrompted] = useState(() => {
+    try {
+      return localStorage.getItem("v3_notifPrompted") === "1";
+    } catch {
+      return false;
     }
   });
   const [showMorningReset, setShowMorningReset] = useState(false);
@@ -1536,17 +1758,419 @@ export default function WaterBottleTracker() {
     }
   };
 
+  const scheduleMorningResetIfEligible = async () => {
+    if (!Capacitor.isNativePlatform()) return;
+    const wakeMins = clamp(Math.round(state.wakeMins), 0, 1439);
+    if (!Number.isFinite(wakeMins)) return;
+
+    const now = new Date();
+    const target = new Date(now);
+    target.setHours(Math.floor(wakeMins / 60), wakeMins % 60, 0, 0);
+    target.setMinutes(target.getMinutes() + 7);
+
+    if (target.getTime() <= now.getTime()) {
+      target.setDate(target.getDate() + 1);
+    }
+
+    try {
+      await LocalNotifications.cancel({ notifications: [{ id: 1001 }] });
+    } catch {
+      // ignore
+    }
+
+    const targetDayKey = getTodayKey(target);
+    if (lastAppOpenDayKey === targetDayKey || lastRefillOrLogDayKey === targetDayKey) {
+      return;
+    }
+
+    try {
+      const perm = await LocalNotifications.requestPermissions();
+      if (perm.display !== "granted") return;
+      await LocalNotifications.schedule({
+        notifications: [
+          {
+            id: 1001,
+            title: "Morning Reset 🌞",
+            body: "Refill your bottle and we’ll track from here.",
+            schedule: { at: target },
+          },
+        ],
+      });
+    } catch {
+      // ignore
+    }
+  };
+
+  const getWindowForSchedule = (now: Date, wakeMins: number, sleepMins: number) => {
+    const wake = new Date(now);
+    wake.setHours(Math.floor(wakeMins / 60), wakeMins % 60, 0, 0);
+    const sleep = new Date(now);
+    sleep.setHours(Math.floor((sleepMins % 1440) / 60), sleepMins % 60, 0, 0);
+    if (sleepMins <= wakeMins) {
+      sleep.setDate(sleep.getDate() + 1);
+    }
+    if (now.getTime() > sleep.getTime()) {
+      wake.setDate(wake.getDate() + 1);
+      sleep.setDate(sleep.getDate() + 1);
+    }
+    return { wake, sleep };
+  };
+
+  const computeWindowProgress = (now: Date, wake: Date, sleep: Date) => {
+    if (now.getTime() <= wake.getTime()) return 0;
+    if (now.getTime() >= sleep.getTime()) return 1;
+    const total = sleep.getTime() - wake.getTime();
+    return total > 0 ? clamp((now.getTime() - wake.getTime()) / total, 0, 1) : 0;
+  };
+
+  const getHydrationWindowBoundsForDayKey = (key: string, wakeMins: number, sleepMins: number) => {
+    const [y, m, d] = key.split("-").map((n) => Number(n));
+    const base = new Date(y, (m || 1) - 1, d || 1, 0, 0, 0, 0);
+    const start = new Date(base);
+    start.setHours(Math.floor(wakeMins / 60), wakeMins % 60, 0, 0);
+    const end = new Date(base);
+    end.setHours(Math.floor((sleepMins % 1440) / 60), sleepMins % 60, 0, 0);
+    if (sleepMins < wakeMins) {
+      end.setDate(end.getDate() + 1);
+    }
+    return { start, end };
+  };
+
+  const getRhythmWindowIndexForDayKey = (
+    atMs: number,
+    key: string,
+    wakeMins: number,
+    sleepMins: number
+  ): 0 | 1 | 2 | 3 | 4 => {
+    const { start, end } = getHydrationWindowBoundsForDayKey(key, wakeMins, sleepMins);
+    const total = end.getTime() - start.getTime();
+    if (total <= 0) return 0;
+    if (atMs >= end.getTime()) return 4;
+    const elapsed = clamp(atMs - start.getTime(), 0, total - 1);
+    const segment = total / 5;
+    return Math.min(4, Math.max(0, Math.floor(elapsed / segment))) as 0 | 1 | 2 | 3 | 4;
+  };
+
+  const updateDailyLogRhythm = (s: AppState, atMs: number, deltaMl: number) => {
+    const at = new Date(atMs);
+    const key = dayKeyByWake(at, s.wakeMins);
+    const existing = (s.dailyLog || {})[key];
+    const windowHitCounts = Array.isArray(existing?.windowHitCounts) && existing.windowHitCounts.length === 5
+      ? [...existing.windowHitCounts]
+      : Array.isArray(existing?.windowHits) && existing.windowHits.length === 5
+        ? existing.windowHits.map((hit: boolean) => (hit ? 1 : 0))
+        : [0, 0, 0, 0, 0];
+    const idx = getRhythmWindowIndexForDayKey(atMs, key, s.wakeMins, s.sleepMins);
+    if (import.meta.env.DEV && deltaMl >= 120) {
+      const { start, end } = getHydrationWindowBoundsForDayKey(key, s.wakeMins, s.sleepMins);
+      const total = end.getTime() - start.getTime();
+      const elapsed = clamp(atMs - start.getTime(), 0, Math.max(0, total - 1));
+      const segment = total > 0 ? total / 5 : 0;
+      console.log("[DEV] rhythm window index", {
+        dayKey: key,
+        wakeMins: s.wakeMins,
+        sleepMins: s.sleepMins,
+        hydrationStart: start.toISOString(),
+        hydrationEnd: end.toISOString(),
+        eventAt: at.toISOString(),
+        elapsedWithinWindowMs: elapsed,
+        segmentLengthMs: segment,
+        windowIndex: idx,
+      });
+    }
+    if (deltaMl >= 120) windowHitCounts[idx] = Math.max(0, windowHitCounts[idx] + 1);
+    return {
+      ...(s.dailyLog || {}),
+      [key]: {
+        consumedML: totalConsumedFromState(s),
+        goalML: s.goalML,
+        bottleML: s.bottleML,
+        carryML: s.carryML,
+        extraML: s.extraML,
+        at: existing?.at ?? atMs,
+        windowHitCounts,
+        lastEventAt: atMs,
+      },
+    };
+  };
+
+  const cancelBehindNudge = async () => {
+    try {
+      await LocalNotifications.cancel({ notifications: [{ id: 1002 }] });
+    } catch {
+      // ignore
+    }
+    setBehindNudgeScheduledDayKey(null);
+    setBehindNudgeScheduledAtMs(null);
+  };
+
+  const cancelLateBehindNudge = async () => {
+    try {
+      await LocalNotifications.cancel({ notifications: [{ id: 1003 }] });
+    } catch {
+      // ignore
+    }
+  };
+
+  const maybeScheduleBehindNudge = async () => {
+    if (!Capacitor.isNativePlatform()) return;
+    const wakeMins = clamp(Math.round(state.wakeMins), 0, 1439);
+    const sleepMins = clamp(Math.round(state.sleepMins), 0, 1439);
+    if (!Number.isFinite(wakeMins) || !Number.isFinite(sleepMins)) return;
+    if (!state.bottleML || state.bottleML <= 0) return;
+
+    const now = new Date();
+    const { wake, sleep } = getWindowForSchedule(now, wakeMins, sleepMins);
+    const expectedBottles = state.bottleML > 0 ? expectedMlAt(state.goalML, now, state.wakeMins, state.sleepMins) / state.bottleML : 0;
+    const actualConsumedBottles = totalConsumed / state.bottleML;
+    const behindBottles = expectedBottles - actualConsumedBottles;
+
+    if (behindNudgeScheduledDayKey && behindNudgeScheduledDayKey === getTodayKey(now) && behindBottles < 0.3) {
+      await cancelBehindNudge();
+      return;
+    }
+
+    const wakePlus20 = new Date(wake.getTime() + 20 * 60 * 1000);
+    const quarterPoint = new Date(wake.getTime() + 0.25 * (sleep.getTime() - wake.getTime()));
+    let triggerTime = new Date(Math.max(now.getTime() + 60 * 1000, wakePlus20.getTime(), quarterPoint.getTime()));
+    const targetDayKey = getTodayKey(triggerTime);
+
+    if (lastBehindNudgeDayKey === targetDayKey) return;
+    if (lastRefillOrLogDayKey === targetDayKey) return;
+    if (behindBottles < 0.3) return;
+
+    if (behindNudgeScheduledDayKey === targetDayKey) return;
+
+    try {
+      const perm = await LocalNotifications.requestPermissions();
+      if (perm.display !== "granted") return;
+      await cancelBehindNudge();
+      await LocalNotifications.schedule({
+        notifications: [
+          {
+            id: 1002,
+            title: "Quick check-in 💧",
+            body: "Have you had your first few sips yet?",
+            schedule: { at: triggerTime },
+          },
+        ],
+      });
+      setBehindNudgeScheduledDayKey(targetDayKey);
+      setBehindNudgeScheduledAtMs(triggerTime.getTime());
+      setLastEarlyBehindFiredAt(triggerTime.getTime());
+    } catch {
+      // ignore
+    }
+  };
+
+  const maybeScheduleLateBehindNudge = async () => {
+    if (!Capacitor.isNativePlatform()) return;
+    const wakeMins = clamp(Math.round(state.wakeMins), 0, 1439);
+    const sleepMins = clamp(Math.round(state.sleepMins), 0, 1439);
+    if (!Number.isFinite(wakeMins) || !Number.isFinite(sleepMins)) return;
+    if (!state.bottleML || state.bottleML <= 0) return;
+
+    const devNowMs =
+      import.meta.env.DEV && typeof (window as any).__LATE_BEHIND_NOW__ === "number"
+        ? (window as any).__LATE_BEHIND_NOW__
+        : null;
+    const now = devNowMs ? new Date(devNowMs) : new Date();
+    const { wake, sleep } = getWindowForSchedule(now, wakeMins, sleepMins);
+    const expectedBottles = state.bottleML > 0 ? expectedMlAt(state.goalML, now, state.wakeMins, state.sleepMins) / state.bottleML : 0;
+    const actualConsumedBottles = totalConsumed / state.bottleML;
+    const behindBottles = expectedBottles - actualConsumedBottles;
+    const wakePlus70 = new Date(wake.getTime() + 0.7 * (sleep.getTime() - wake.getTime()));
+    const triggerTime = new Date(Math.max(now.getTime() + 2 * 60 * 1000, wakePlus70.getTime()));
+    const dayKey = getTodayKey(triggerTime);
+    const alreadyFired = lastLateBehindDayKey === dayKey;
+    const refilledAfterEarly =
+      typeof lastEarlyBehindFiredAt === "number" &&
+      typeof lastRefillOrLogAt === "number" &&
+      lastRefillOrLogAt > lastEarlyBehindFiredAt;
+    const shouldScheduleLate = behindBottles >= 0.5 && !alreadyFired && !refilledAfterEarly;
+
+    if (import.meta.env.DEV) {
+      console.log("LateBehind check", {
+        windowProgress: computeWindowProgress(now, wake, sleep),
+        behindBottles,
+        earlyAt: lastEarlyBehindFiredAt,
+        refillAt: lastRefillOrLogAt,
+        refilledAfterEarly,
+        alreadyFired,
+        shouldScheduleLate,
+      });
+    }
+
+    if (!shouldScheduleLate) {
+      if (behindBottles < 0.5 || refilledAfterEarly) {
+        await cancelLateBehindNudge();
+      }
+      return;
+    }
+
+    try {
+      const perm = await LocalNotifications.requestPermissions();
+      if (perm.display !== "granted") return;
+      await cancelLateBehindNudge();
+      await LocalNotifications.schedule({
+        notifications: [
+          {
+            id: 1003,
+            title: "Still time 💙",
+            body: "A few sips now will keep today on track.",
+            schedule: { at: triggerTime },
+          },
+        ],
+      });
+      setLastLateBehindDayKey(dayKey);
+    } catch {
+      // ignore
+    }
+  };
+
+  const maybeSendPraiseNotification = async (
+    reason: "scan" | "track" | "refill",
+    actualConsumedMlOverride?: number
+  ) => {
+    if (!Capacitor.isNativePlatform()) return;
+    if (!state.bottleML || state.bottleML <= 0) return;
+    void reason;
+
+    const now = new Date();
+    const todayKey = getTodayKey(now);
+    const openedToday = lastAppOpenDayKey === todayKey;
+    if (!openedToday) return;
+    if (lastPraiseDateKey === todayKey) return;
+
+    const behindNudgeFiredToday = lastBehindNudgeDayKey === todayKey || lastLateBehindDayKey === todayKey;
+    if (behindNudgeFiredToday) return;
+
+    const { wake, sleep } = getWindowForSchedule(now, state.wakeMins, state.sleepMins);
+    const windowProgress = computeWindowProgress(now, wake, sleep);
+    if (windowProgress < 0.25) return;
+
+    const expectedBottlesNow = expectedMlAt(state.goalML, now, state.wakeMins, state.sleepMins) / state.bottleML;
+    const actualConsumedMl = typeof actualConsumedMlOverride === "number" ? actualConsumedMlOverride : totalConsumed;
+    const actualBottlesNow = actualConsumedMl / state.bottleML;
+    const deltaBottles = actualBottlesNow - expectedBottlesNow;
+    if (deltaBottles < 0) return;
+
+    const absDelta = Math.abs(deltaBottles);
+    let title: string | null = null;
+    let body: string | null = null;
+
+    if (absDelta <= 0.2) {
+      title = "Nice one 💧";
+      body = "You’re right on pace.";
+    } else if (deltaBottles >= 0.3) {
+      const aheadBy = format1(Math.round(deltaBottles * 10) / 10);
+      title = "Good job 💧";
+      body = `You’re ahead by ~${aheadBy} bottles.`;
+    } else {
+      return;
+    }
+
+    try {
+      const perm = await LocalNotifications.requestPermissions();
+      if (perm.display !== "granted") return;
+      await LocalNotifications.cancel({ notifications: [{ id: 1004 }] });
+      await LocalNotifications.schedule({
+        notifications: [
+          {
+            id: 1004,
+            title,
+            body,
+            schedule: { at: new Date(Date.now() + 1000) },
+          },
+        ],
+      });
+      setLastPraiseDateKey(todayKey);
+    } catch {
+      // ignore
+    }
+  };
+
+  const triggerTestNotifications = async () => {
+    if (!Capacitor.isNativePlatform()) return;
+    try {
+      const perm = await LocalNotifications.requestPermissions();
+      if (perm.display !== "granted") return;
+      const now = Date.now();
+      const tests = [
+        { id: 2001, title: "Morning Reset 🌞", body: "Refill your bottle and we’ll track from here." },
+      ];
+      await LocalNotifications.cancel({ notifications: tests.map((t) => ({ id: t.id })) });
+      await LocalNotifications.schedule({
+        notifications: tests.map((t, i) => ({
+          id: t.id,
+          title: t.title,
+          body: t.body,
+          schedule: { at: new Date(now + 1000 + i * 2000) },
+        })),
+      });
+    } catch {
+      // ignore
+    }
+  };
+
   useEffect(() => {
     checkMorningReset();
-  }, [state.wakeMins, lastMorningResetToken]);
+    scheduleMorningResetIfEligible();
+    maybeScheduleBehindNudge();
+    maybeScheduleLateBehindNudge();
+  }, [state.wakeMins, state.sleepMins, lastMorningResetToken, lastAppOpenDayKey, lastRefillOrLogDayKey, lastBehindNudgeDayKey, behindNudgeScheduledDayKey]);
 
   useEffect(() => {
     const onVis = () => {
-      if (document.visibilityState === "visible") checkMorningReset();
+      if (document.visibilityState === "visible") {
+        setLastAppOpenDayKey(getTodayKey());
+        if (behindNudgeScheduledDayKey) {
+          void cancelBehindNudge();
+        }
+        if (behindNudgeScheduledDayKey && behindNudgeScheduledAtMs && Date.now() >= behindNudgeScheduledAtMs) {
+          setLastBehindNudgeDayKey(getTodayKey());
+          setBehindNudgeScheduledAtMs(null);
+          setBehindNudgeScheduledDayKey(null);
+        }
+        checkMorningReset();
+        scheduleMorningResetIfEligible();
+        maybeScheduleBehindNudge();
+        maybeScheduleLateBehindNudge();
+      }
     };
     document.addEventListener("visibilitychange", onVis);
     return () => document.removeEventListener("visibilitychange", onVis);
-  }, [state.wakeMins, lastMorningResetToken]);
+  }, [
+    state.wakeMins,
+    state.sleepMins,
+    lastMorningResetToken,
+    lastAppOpenDayKey,
+    lastRefillOrLogDayKey,
+    lastBehindNudgeDayKey,
+    behindNudgeScheduledDayKey,
+    behindNudgeScheduledAtMs,
+    lastLateBehindDayKey,
+    lastEarlyBehindFiredAt,
+    lastRefillOrLogAt,
+  ]);
+
+  useEffect(() => {
+    setLastAppOpenDayKey(getTodayKey());
+  }, []);
+
+  useEffect(() => {
+    if (!notifPromptPending || !state.hasOnboarded || state.step !== 0) return;
+    setNotifPromptPending(false);
+    setNotifPrompted(true);
+    void (async () => {
+      try {
+        await LocalNotifications.requestPermissions();
+      } catch {
+        // ignore
+      }
+      await scheduleMorningResetIfEligible();
+    })();
+  }, [notifPromptPending, state.hasOnboarded, state.step]);
 
   useEffect(() => {
     try {
@@ -1557,6 +2181,115 @@ export default function WaterBottleTracker() {
       // ignore
     }
   }, [lastMorningResetToken]);
+
+  useEffect(() => {
+    try {
+      if (lastAppOpenDayKey) {
+        localStorage.setItem("v3_lastAppOpenDayKey", lastAppOpenDayKey);
+      }
+    } catch {
+      // ignore
+    }
+  }, [lastAppOpenDayKey]);
+
+  useEffect(() => {
+    try {
+      if (lastRefillOrLogDayKey) {
+        localStorage.setItem("v3_lastRefillOrLogDayKey", lastRefillOrLogDayKey);
+      }
+    } catch {
+      // ignore
+    }
+  }, [lastRefillOrLogDayKey]);
+
+  useEffect(() => {
+    try {
+      if (typeof lastRefillOrLogAt === "number" && Number.isFinite(lastRefillOrLogAt)) {
+        localStorage.setItem("v3_lastRefillOrLogAt", String(lastRefillOrLogAt));
+      } else {
+        localStorage.removeItem("v3_lastRefillOrLogAt");
+      }
+    } catch {
+      // ignore
+    }
+  }, [lastRefillOrLogAt]);
+
+  useEffect(() => {
+    try {
+      if (lastBehindNudgeDayKey) {
+        localStorage.setItem("v3_lastBehindNudgeDayKey", lastBehindNudgeDayKey);
+      }
+    } catch {
+      // ignore
+    }
+  }, [lastBehindNudgeDayKey]);
+
+  useEffect(() => {
+    try {
+      if (behindNudgeScheduledDayKey) {
+        localStorage.setItem("v3_behindNudgeScheduledDayKey", behindNudgeScheduledDayKey);
+      } else {
+        localStorage.removeItem("v3_behindNudgeScheduledDayKey");
+      }
+    } catch {
+      // ignore
+    }
+  }, [behindNudgeScheduledDayKey]);
+
+  useEffect(() => {
+    try {
+      if (typeof behindNudgeScheduledAtMs === "number" && Number.isFinite(behindNudgeScheduledAtMs)) {
+        localStorage.setItem("v3_behindNudgeScheduledAtMs", String(behindNudgeScheduledAtMs));
+      } else {
+        localStorage.removeItem("v3_behindNudgeScheduledAtMs");
+      }
+    } catch {
+      // ignore
+    }
+  }, [behindNudgeScheduledAtMs]);
+
+  useEffect(() => {
+    try {
+      if (typeof lastEarlyBehindFiredAt === "number" && Number.isFinite(lastEarlyBehindFiredAt)) {
+        localStorage.setItem("v3_lastEarlyBehindFiredAt", String(lastEarlyBehindFiredAt));
+      } else {
+        localStorage.removeItem("v3_lastEarlyBehindFiredAt");
+      }
+    } catch {
+      // ignore
+    }
+  }, [lastEarlyBehindFiredAt]);
+
+  useEffect(() => {
+    try {
+      if (lastLateBehindDayKey) {
+        localStorage.setItem("v3_lastLateBehindDayKey", lastLateBehindDayKey);
+      } else {
+        localStorage.removeItem("v3_lastLateBehindDayKey");
+      }
+    } catch {
+      // ignore
+    }
+  }, [lastLateBehindDayKey]);
+  useEffect(() => {
+    try {
+      if (lastPraiseDateKey) {
+        localStorage.setItem("v3_lastPraiseDateKey", lastPraiseDateKey);
+      } else {
+        localStorage.removeItem("v3_lastPraiseDateKey");
+      }
+    } catch {
+      // ignore
+    }
+  }, [lastPraiseDateKey]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("v3_notifPrompted", notifPrompted ? "1" : "0");
+    } catch {
+      // ignore
+    }
+  }, [notifPrompted]);
 
   function onOnboardingPick() {
     setOnboardingScanError(null);
@@ -1598,12 +2331,45 @@ export default function WaterBottleTracker() {
   const [scanError, setScanError] = useState<string | null>(null);
   const [scanCooldownUntil, setScanCooldownUntil] = useState<number>(0);
   const [scanCooldownLeftMs, setScanCooldownLeftMs] = useState<number>(0);
+  const [scanHintVisible, setScanHintVisible] = useState(false);
+  const scanHintTimeoutRef = useRef<number | null>(null);
+  const [scanMessageVisible, setScanMessageVisible] = useState(false);
+  const scanMessageTimeoutRef = useRef<number | null>(null);
 
   useEffect(() => {
     return () => {
       if (scanAbortRef.current) scanAbortRef.current.abort();
     };
   }, []);
+
+  useEffect(() => {
+    return () => {
+      if (scanHintTimeoutRef.current) window.clearTimeout(scanHintTimeoutRef.current);
+      if (scanMessageTimeoutRef.current) window.clearTimeout(scanMessageTimeoutRef.current);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (scanState !== "scanning") return;
+    if (scanHintTimeoutRef.current) window.clearTimeout(scanHintTimeoutRef.current);
+    setScanHintVisible(true);
+    scanHintTimeoutRef.current = window.setTimeout(() => {
+      setScanHintVisible(false);
+      scanHintTimeoutRef.current = null;
+    }, 5000);
+  }, [scanState]);
+
+  useEffect(() => {
+    if (!scanMessage || scanState === "scanning") return;
+    if (scanMessageTimeoutRef.current) window.clearTimeout(scanMessageTimeoutRef.current);
+    setScanHintVisible(true);
+    setScanMessageVisible(true);
+    scanMessageTimeoutRef.current = window.setTimeout(() => {
+      setScanMessageVisible(false);
+      setScanHintVisible(false);
+      scanMessageTimeoutRef.current = null;
+    }, 5000);
+  }, [scanMessage, scanState]);
 
   useEffect(() => {
     const tick = () => {
@@ -1639,10 +2405,23 @@ export default function WaterBottleTracker() {
     setScanError(null);
   }
 
-  function commitScanToDailyProgress(scannedFraction: number) {
+  function commitScanToDailyProgress(scannedFraction: number, reason: "scan" | "track" | "refill") {
     const wasEmpty = scannedFraction <= 0.0001;
     setRemaining(scannedFraction, { action: "track" });
     if (wasEmpty) setPendingRemaining(1);
+    setLastRefillOrLogDayKey(getTodayKey());
+    setLastRefillOrLogAt(Date.now());
+    void cancelBehindNudge();
+    void cancelLateBehindNudge();
+    const today = dayKeyByWake(new Date(), stateRef.current.wakeMins);
+    let ss = stateRef.current;
+    if (ss.dayKey !== today) {
+      ss = { ...ss, dayKey: today, completedBottles: 0, remaining: 1, carryML: 0, extraML: 0, history: [], celebrate: null };
+    }
+    const r = clamp(scannedFraction, 0, 1);
+    let nextState: AppState = { ...ss, remaining: r };
+    if (r <= 0.0001) nextState = { ...advanceBottle(nextState), remaining: 1 };
+    void maybeSendPraiseNotification(reason, totalConsumedFromState(nextState));
   }
 
   function onScanFileChange(e: React.ChangeEvent<HTMLInputElement>) {
@@ -1815,7 +2594,7 @@ export default function WaterBottleTracker() {
   }
 
   function handleRefill() {
-    commitScanToDailyProgress(pendingRemaining);
+    commitScanToDailyProgress(pendingRemaining, "refill");
     setState((s) => {
       const consumed = totalConsumedFromState(s);
       const pct = s.goalML > 0 ? Math.round((consumed / s.goalML) * 100) : 0;
@@ -1860,7 +2639,7 @@ export default function WaterBottleTracker() {
       const wakeMins = clamp(Math.round(state.wakeMins), 0, 1439);
       setState((s) => ({
         ...s,
-        dayKey: dayKeyBySleep(new Date(), s.sleepMins),
+        dayKey: dayKeyByWake(new Date(), s.wakeMins),
         completedBottles: 0,
         remaining: 1,
         carryML: 0,
@@ -1886,6 +2665,7 @@ export default function WaterBottleTracker() {
     if (!state.weightKg || state.weightKg < 30) return null;
     return recommendGoalML({ weightKg: Number(state.weightKg), activity: state.activity, warm: state.warm });
   }, [state.weightKg, state.activity, state.warm]);
+  const debloatBreakdown = useMemo(() => computeDebloatEloBreakdown(state), [state.dailyLog, state.sleepMins]);
 
   if (!state.hasOnboarded && state.step === 0) {
     return (
@@ -1919,6 +2699,52 @@ export default function WaterBottleTracker() {
           </div>
 
           <div className="px-5">
+            <div className="mt-4 rounded-3xl border border-white/10 bg-white/6 p-4">
+              <div className="text-sm font-extrabold">Hydration Elo (7-day)</div>
+              <div className="mt-2 text-2xl font-extrabold">
+                DebloatElo: <span className="text-[#0A84FF]">{debloatBreakdown.debloatElo}</span>/100
+              </div>
+              <div className="mt-1 text-xs text-white/60">
+                This score is the average of your last 7 daily scores (each day = consistency points + volume points).
+              </div>
+
+              <div className="mt-4 grid gap-3 text-xs text-white/75">
+                {debloatBreakdown.days.map((d) => (
+                  <div key={d.dayKey} className="rounded-2xl border border-white/10 bg-white/5 p-3">
+                    <div className="flex items-center justify-between">
+                      <div className="font-extrabold">{d.dayKey}</div>
+                      <div className="font-extrabold">Daily score: {d.dailyScore}/100</div>
+                    </div>
+                    <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-white/70">
+                      <div>Consistency (Spread): {d.spreadScore}/70</div>
+                      <div>Volume: {d.volumeScore}/30</div>
+                      <div>Goal hit: {Math.round(d.pctOfGoal * 100)}%</div>
+                    </div>
+                    <div className="mt-2 flex items-center gap-2 text-white/70">
+                      <span>Windows hit (morning→night):</span>
+                      <div className="flex gap-1">
+                        {debloatBreakdown.weights.map((w, i) => (
+                          <span
+                            key={w}
+                            className={
+                              "px-2 py-0.5 rounded-full border text-[10px] " +
+                              (d.windowHits[i]
+                                ? "border-white/25 bg-white/10 text-white"
+                                : "border-white/10 bg-white/5 text-white/40")
+                            }
+                          >
+                            {w}
+                            {d.windowHits[i] ? "✓" : "–"}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="mt-2 text-[10px] text-white/45">Meaningful sip = any +120ml event in that window.</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
             <div className="mt-8">
               <div className="flex items-end justify-between">
                 <div className="text-sm text-white/70">Daily progress • Bottle {state.bottleML} ml</div>
@@ -1937,7 +2763,7 @@ export default function WaterBottleTracker() {
               <div className="mt-1 text-xs text-white/50">
                 Yesterday:{" "}
                 {(() => {
-                  const y = (state.dailyLog || {})[prevDayKeyBySleep(new Date(), state.sleepMins)];
+                  const y = (state.dailyLog || {})[prevDayKeyByWake(new Date(), state.wakeMins)];
                   if (!y) return <span className="text-white/40">—</span>;
                   const pct = y.goalML > 0 ? Math.round((y.consumedML / y.goalML) * 100) : 0;
                   return (
@@ -2066,16 +2892,13 @@ export default function WaterBottleTracker() {
             >
               {showFlag && (
                 <div
-                  className={
-                    "absolute left-[3px] text-2xl font-extrabold leading-none " +
-                    (pacingStatus === "behind" ? "text-[#FF453A]" : "text-green-400")
-                  }
+                  className="absolute left-[3px] text-[13px] font-extrabold leading-none text-white/50"
                   style={{
                     top: `${flagTop}px`,
                     animation: pacingStatus === "ahead" ? "fadeOutLineUi 0.6s ease forwards" : undefined,
                   }}
                 >
-                  🏁
+                  {formatClock12h(new Date())}
                 </div>
               )}
               <BottleVector
@@ -2094,7 +2917,10 @@ export default function WaterBottleTracker() {
 
           </div>
 
-          <div className="mt-10 mb-[96px] flex flex-col items-center gap-2">
+          <div
+            className="mt-10 mb-[96px] flex flex-col items-center gap-2 transition-transform duration-300 ease-out"
+            style={{ transform: scanHintVisible ? "translateY(-16px)" : "translateY(0)" }}
+          >
             <div className="flex items-center justify-center gap-3">
               <button
                 onClick={undo}
@@ -2145,8 +2971,15 @@ export default function WaterBottleTracker() {
                 Cancel
               </button>
             )}
-            {scanMessage && scanState !== "scanning" && <div className="text-xs text-white/70">{scanMessage}</div>}
+            {scanMessage && scanState !== "scanning" && (
+              <div className={"text-xs text-white/70 transition-opacity duration-300 " + (scanMessageVisible ? "opacity-100" : "opacity-0")}>
+                {scanMessage}
+              </div>
+            )}
             {scanError && <div className="text-xs text-[#FF453A]">{scanError}</div>}
+            <div className={"mt-1 h-4 text-xs text-white/45 transition-opacity duration-300 " + (scanHintVisible ? "opacity-100" : "opacity-0")}>
+              Scanning...
+            </div>
           </div>
 
         </div>
@@ -2155,7 +2988,7 @@ export default function WaterBottleTracker() {
           onOpenAnalytics={() => setShowAnalytics(true)}
           onTrack={() => {
             triggerTrackHaptic();
-            commitScanToDailyProgress(pendingRemaining);
+            commitScanToDailyProgress(pendingRemaining, "track");
             if (isLowWater) setLowLevelTracked(true);
             if (levelUpdatedTimeoutRef.current) window.clearTimeout(levelUpdatedTimeoutRef.current);
             setShowLevelUpdated(true);
@@ -2518,16 +3351,16 @@ export default function WaterBottleTracker() {
               <div className="mt-1 text-[11px] text-white/45">Doesn’t have to be exact.</div>
             </div>
 
-            <button
-              onClick={() => {
-                const { startMins, endMins } = hydrationWindowFromInputs(
-                  state.wakeHour,
-                  state.wakeMinute,
-                  state.wakeMeridiem,
-                  state.sleepHour,
-                  state.sleepMinute,
-                  state.sleepMeridiem
-                );
+              <button
+                onClick={() => {
+                  const { startMins, endMins } = hydrationWindowFromInputs(
+                    state.wakeHour,
+                    state.wakeMinute,
+                    state.wakeMeridiem,
+                    state.sleepHour,
+                    state.sleepMinute,
+                    state.sleepMeridiem
+                  );
                 setState((s) => ({
                   ...s,
                   wakeMins: startMins,
@@ -2757,6 +3590,15 @@ export default function WaterBottleTracker() {
 
             <div className="mt-4" style={{ animation: "setupIn .55s ease-out .26s both" }}>
               <button
+                onClick={triggerTestNotifications}
+                className="w-full px-4 py-3 rounded-2xl border border-white/15 bg-white/8 font-extrabold active:scale-[0.99]"
+              >
+                Test notifications
+              </button>
+            </div>
+
+            <div className="mt-4" style={{ animation: "setupIn .55s ease-out .26s both" }}>
+              <button
                 onClick={() => setStep(7)}
                 className="w-full px-4 py-3 rounded-2xl border border-[#0A84FF]/35 bg-[#0A84FF]/10 text-[#85C0E7] font-extrabold active:scale-[0.99]"
               >
@@ -2911,7 +3753,7 @@ export default function WaterBottleTracker() {
                     ...s,
                     hasOnboarded: true,
                     step: 0,
-                    dayKey: dayKeyBySleep(new Date(), s.sleepMins),
+                    dayKey: dayKeyByWake(new Date(), s.wakeMins),
                     completedBottles: 0,
                     remaining: 1,
                     carryML: 0,
@@ -2919,6 +3761,7 @@ export default function WaterBottleTracker() {
                     history: [],
                     celebrate: null,
                   }));
+                  setNotifPromptPending(true);
                 }}
                 className="flex-1 px-4 py-4 rounded-2xl bg-[#0A84FF] font-extrabold"
               >
