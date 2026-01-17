@@ -1404,8 +1404,6 @@ export default function WaterBottleTracker() {
     const left = Math.max(0, goalBottles - consumedBottles);
     return format1(left);
   }, [state.goalML, state.bottleML, totalConsumed]);
-  const bottlesLeftValue = Number(bottlesLeftText);
-  const bottleWord = bottlesLeftValue > 1 ? "bottles" : "bottle";
   const expectedNowMl = useMemo(
     () => expectedMlAt(state.goalML, new Date(), state.wakeMins, state.sleepMins),
     [state.goalML, state.wakeMins, state.sleepMins, nowTick]
@@ -2353,7 +2351,6 @@ export default function WaterBottleTracker() {
   const [scanError, setScanError] = useState<string | null>(null);
   const [scanCooldownUntil, setScanCooldownUntil] = useState<number>(0);
   const [scanCooldownLeftMs, setScanCooldownLeftMs] = useState<number>(0);
-  const [scanHintVisible, setScanHintVisible] = useState(false);
   const scanHintTimeoutRef = useRef<number | null>(null);
   const [scanMessageVisible, setScanMessageVisible] = useState(false);
   const scanMessageTimeoutRef = useRef<number | null>(null);
@@ -2374,21 +2371,14 @@ export default function WaterBottleTracker() {
   useEffect(() => {
     if (scanState !== "scanning") return;
     if (scanHintTimeoutRef.current) window.clearTimeout(scanHintTimeoutRef.current);
-    setScanHintVisible(true);
-    scanHintTimeoutRef.current = window.setTimeout(() => {
-      setScanHintVisible(false);
-      scanHintTimeoutRef.current = null;
-    }, 5000);
   }, [scanState]);
 
   useEffect(() => {
     if (!scanMessage || scanState === "scanning") return;
     if (scanMessageTimeoutRef.current) window.clearTimeout(scanMessageTimeoutRef.current);
-    setScanHintVisible(true);
     setScanMessageVisible(true);
     scanMessageTimeoutRef.current = window.setTimeout(() => {
       setScanMessageVisible(false);
-      setScanHintVisible(false);
       scanMessageTimeoutRef.current = null;
     }, 5000);
   }, [scanMessage, scanState]);
@@ -3025,14 +3015,22 @@ export default function WaterBottleTracker() {
         <div className="px-5 pt-12 pb-5">
           <div className="flex items-start justify-between gap-3">
             <div className="flex-1 text-center">
-              <div className="text-5xl font-extrabold leading-tight">
-                <span className="text-[#0A84FF]">{bottlesLeftText}</span> {bottleWord} till goal
+              <div className="text-[clamp(32px,8.5vw,52px)] font-extrabold leading-tight text-center">
+                <span className="block text-[clamp(57px,14.25vw,90px)]">
+                  <span className="text-[#0A84FF]">{bottlesLeftText}</span> Bottles
+                </span>
+                <span className="block">Remaining</span>
               </div>
-              <div className="relative mt-3 text-2xl font-extrabold leading-tight">
+              <div
+                className={
+                  "relative mt-3 translate-y-[10px] font-extrabold leading-tight transition-all duration-200 ease-out " +
+                  (meniscusDragging ? "text-[clamp(22px,6.2vw,34px)]" : "text-[clamp(24px,6.8vw,38px)]")
+                }
+              >
                 <span
                   className={
                     "block transition-all duration-300 ease-out " +
-                    (showLevelUpdated ? "opacity-0 translate-y-1 scale-[0.99]" : "opacity-100 translate-y-0 scale-100 text-white")
+                    (showLevelUpdated ? "opacity-0 translate-y-1 scale-[0.99]" : "opacity-100 translate-y-0 scale-100 text-white/60")
                   }
                 >
                   How much water is in your bottle?
@@ -3040,7 +3038,7 @@ export default function WaterBottleTracker() {
                 <span
                   className={
                     "absolute inset-0 block transition-all duration-300 ease-out text-green-500 " +
-                    (showLevelUpdated ? "opacity-100 translate-y-0 scale-100" : "opacity-0 translate-y-1 scale-[0.99]")
+                    (showLevelUpdated ? "opacity-100 translate-y-0 scale-[1.3]" : "opacity-0 translate-y-1 scale-[0.99]")
                   }
                 >
                   Water level updated
@@ -3061,17 +3059,27 @@ export default function WaterBottleTracker() {
           </div>
         </div>
 
-        <div className="px-5">
+        <div className="px-5 translate-y-[10px]">
           <div
             className="flex flex-col items-center justify-center gap-0 select-none"
             style={{ WebkitUserSelect: "none", WebkitTouchCallout: "none" }}
             onContextMenu={(e) => e.preventDefault()}
           >
-            <div className="text-lg font-extrabold tabular-nums mb-[10px]">{remainingPct}%</div>
+            {meniscusDragging && (
+              <>
+                <style>{`@keyframes pctIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}`}</style>
+                <div
+                  className="text-lg font-extrabold tabular-nums mb-[10px] transition-opacity duration-200"
+                  style={{ animation: "pctIn 0.2s ease-out" }}
+                >
+                  {remainingPct}%
+                </div>
+              </>
+            )}
 
             <div
               ref={bottleWrapRef}
-              className="relative h-[300px] select-none overflow-visible"
+              className="relative h-[300px] -translate-x-[6px] select-none overflow-visible"
               style={{
                 touchAction: "none",
                 WebkitUserSelect: "none",
@@ -3108,10 +3116,7 @@ export default function WaterBottleTracker() {
 
           </div>
 
-          <div
-            className="mt-10 mb-[96px] flex flex-col items-center gap-2 transition-transform duration-300 ease-out"
-            style={{ transform: scanHintVisible ? "translateY(-16px)" : "translateY(0)" }}
-          >
+          <div className="mt-[24px] mb-[96px] flex flex-col items-center gap-2">
             <div className="flex items-center justify-center gap-3">
               <button
                 onClick={undo}
@@ -3168,9 +3173,6 @@ export default function WaterBottleTracker() {
               </div>
             )}
             {scanError && <div className="text-xs text-[#FF453A]">{scanError}</div>}
-            <div className={"mt-1 h-4 text-xs text-white/45 transition-opacity duration-300 " + (scanHintVisible ? "opacity-100" : "opacity-0")}>
-              Scanning...
-            </div>
           </div>
 
         </div>
