@@ -32,6 +32,8 @@
 	<string>Used to scan your water bottle.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>Used to select a bottle photo.</string>
+	<key>NSMotionUsageDescription</key>
+	<string>Used to animate the Debloat tier fill with device motion.</string>
 	<key>UIRequiredDeviceCapabilities</key>
 	<array>
 		<string>armv7</string>

@@ -1,4 +1,5 @@
 import React, { useEffect, useId, useMemo, useRef, useState } from "react";
+import DebloatTeardrop from "./components/DebloatTeardrop";
 import { Capacitor } from "@capacitor/core";
 import { Haptics, ImpactStyle } from "@capacitor/haptics";
 import { LocalNotifications } from "@capacitor/local-notifications";
@@ -527,6 +528,7 @@ function makeDefaultState() {
         windowHitCounts?: number[];
         windowHits?: boolean[];
         windowTotalsMl?: number[];
+        windowConsumedML?: number[];
         lastEventAt?: number;
       }
     >,
@@ -541,6 +543,7 @@ function makeDefaultState() {
       ml?: number;
       rhythmWindowIndex?: 0 | 1 | 2 | 3 | 4;
       rhythmDelta?: number;
+      rhythmMlDelta?: number;
     }>,
 
 
@@ -1200,6 +1203,9 @@ export default function WaterBottleTracker() {
         : Array.isArray(day?.windowHits) && day.windowHits.length === 5
           ? day.windowHits.map((hit: boolean) => (hit ? 1 : 0))
           : [0, 0, 0, 0, 0];
+      const windowConsumedML = Array.isArray(day?.windowConsumedML) && day.windowConsumedML.length === 5
+        ? day.windowConsumedML
+        : [0, 0, 0, 0, 0];
       const hits = windowHitCounts.map((count: number) => count > 0);
       const spreadScore = hits.reduce((sum: number, hit: boolean, idx: number) => (hit ? sum + weights[idx] : sum), 0);
       const pct = day?.goalML ? Number(((day.consumedML || 0) / day.goalML).toFixed(2)) : 0;
@@ -1210,6 +1216,7 @@ export default function WaterBottleTracker() {
         goalML: day?.goalML ?? 0,
         pctOfGoal: pct,
         windowHitCounts,
+        windowConsumedML,
         windowHits: hits,
         spreadScore,
         volumeScore,
@@ -1515,7 +1522,7 @@ export default function WaterBottleTracker() {
         prevCarry,
         prevExtra,
         ...meta,
-        ...(typeof rhythmWindowIndex === "number" ? { rhythmWindowIndex, rhythmDelta: 1 } : {}),
+        ...(typeof rhythmWindowIndex === "number" ? { rhythmWindowIndex, rhythmDelta: 1, rhythmMlDelta: rhythmDelta } : {}),
       };
       const history = [...(ss.history || []), entry].slice(-50);
       nextState = { ...nextState, history };
@@ -1567,7 +1574,7 @@ export default function WaterBottleTracker() {
         prevExtra,
         action: "extra",
         ml,
-        ...(typeof rhythmWindowIndex === "number" ? { rhythmWindowIndex, rhythmDelta: 1 } : {}),
+        ...(typeof rhythmWindowIndex === "number" ? { rhythmWindowIndex, rhythmDelta: 1, rhythmMlDelta: ml } : {}),
       };
       const history = [...(ss.history || []), entry].slice(-50);
 
@@ -1602,8 +1609,15 @@ export default function WaterBottleTracker() {
           : Array.isArray(day?.windowHits) && day.windowHits.length === 5
             ? day.windowHits.map((hit: boolean) => (hit ? 1 : 0))
             : [0, 0, 0, 0, 0];
+        const windowConsumedML = Array.isArray(day?.windowConsumedML) && day.windowConsumedML.length === 5
+          ? [...day.windowConsumedML]
+          : [0, 0, 0, 0, 0];
         const delta = typeof last.rhythmDelta === "number" ? last.rhythmDelta : 1;
         windowHitCounts[last.rhythmWindowIndex] = Math.max(0, windowHitCounts[last.rhythmWindowIndex] - delta);
+        const mlDelta = typeof last.rhythmMlDelta === "number" ? last.rhythmMlDelta : 0;
+        if (mlDelta > 0) {
+          windowConsumedML[last.rhythmWindowIndex] = Math.max(0, windowConsumedML[last.rhythmWindowIndex] - mlDelta);
+        }
         const dailyLog = {
           ...(nextState.dailyLog || {}),
           [key]: {
@@ -1614,11 +1628,12 @@ export default function WaterBottleTracker() {
             extraML: day?.extraML ?? nextState.extraML,
             at: day?.at ?? eventAt,
             windowHitCounts,
+            windowConsumedML,
             lastEventAt: eventAt,
           },
         };
         if (import.meta.env.DEV) {
-          console.log("[DEV] Undo rhythm decrement", { windowIndex: last.rhythmWindowIndex, windowHitCounts });
+          console.log("[DEV] Undo rhythm decrement", { windowIndex: last.rhythmWindowIndex, windowHitCounts, windowConsumedML });
         }
         return { ...nextState, dailyLog };
       }
@@ -1860,6 +1875,9 @@ export default function WaterBottleTracker() {
       : Array.isArray(existing?.windowHits) && existing.windowHits.length === 5
         ? existing.windowHits.map((hit: boolean) => (hit ? 1 : 0))
         : [0, 0, 0, 0, 0];
+    const windowConsumedML = Array.isArray(existing?.windowConsumedML) && existing.windowConsumedML.length === 5
+      ? [...existing.windowConsumedML]
+      : [0, 0, 0, 0, 0];
     const idx = getRhythmWindowIndexForDayKey(atMs, key, s.wakeMins, s.sleepMins);
     if (import.meta.env.DEV && deltaMl >= 120) {
       const { start, end } = getHydrationWindowBoundsForDayKey(key, s.wakeMins, s.sleepMins);
@@ -1878,7 +1896,10 @@ export default function WaterBottleTracker() {
         windowIndex: idx,
       });
     }
-    if (deltaMl >= 120) windowHitCounts[idx] = Math.max(0, windowHitCounts[idx] + 1);
+    if (deltaMl >= 120) {
+      windowHitCounts[idx] = Math.max(0, windowHitCounts[idx] + 1);
+      windowConsumedML[idx] = Math.max(0, windowConsumedML[idx] + deltaMl);
+    }
     return {
       ...(s.dailyLog || {}),
       [key]: {
@@ -1889,6 +1910,7 @@ export default function WaterBottleTracker() {
         extraML: s.extraML,
         at: existing?.at ?? atMs,
         windowHitCounts,
+        windowConsumedML,
         lastEventAt: atMs,
       },
     };
@@ -2666,6 +2688,74 @@ export default function WaterBottleTracker() {
     return recommendGoalML({ weightKg: Number(state.weightKg), activity: state.activity, warm: state.warm });
   }, [state.weightKg, state.activity, state.warm]);
   const debloatBreakdown = useMemo(() => computeDebloatEloBreakdown(state), [state.dailyLog, state.sleepMins]);
+  const debloatTier = useMemo(() => {
+    const v = Number.isFinite(debloatBreakdown.debloatElo) ? debloatBreakdown.debloatElo : 0;
+    if (v >= 85) return { name: "Emerald", emoji: "🐲", color: "#22C55E", detail: "Second Nature" };
+    if (v >= 70) return { name: "Platinum", emoji: "💠", color: "#7A8C99", detail: "Locked In" };
+    if (v >= 50) return { name: "Gold", emoji: "🥇", color: "#D4AF37", detail: "In Rhythm" };
+    if (v >= 20) return { name: "Silver", emoji: "🥈", color: "#C0C0C0", detail: "Finding Flow" };
+    return { name: "Bronze", emoji: "🥉", color: "#CD7F32", detail: "Settling In" };
+  }, [debloatBreakdown.debloatElo]);
+  const consistencyDots = useMemo(() => {
+    const totalHits = debloatBreakdown.days.reduce((sum, d) => sum + d.windowHitCounts.filter((c) => c > 0).length, 0);
+    const avgHitCount = totalHits / 7;
+    return clamp(Math.round(avgHitCount), 1, 5);
+  }, [debloatBreakdown.days]);
+  const volumeDots = useMemo(() => {
+    const avgPct =
+      debloatBreakdown.days.reduce((sum, d) => {
+        if (!d.goalML) return sum;
+        return sum + d.consumedML / d.goalML;
+      }, 0) / 7;
+    return avgPct < 0.4 ? 1 : avgPct < 0.6 ? 2 : avgPct < 0.8 ? 3 : avgPct < 1 ? 4 : 5;
+  }, [debloatBreakdown.days]);
+  const debloatTimingDots = useMemo(() => {
+    const dayDots = debloatBreakdown.days.map((d) => {
+      if (d.consumedML <= 0) return 1;
+      const frontMl = (d.windowConsumedML?.[0] || 0) + (d.windowConsumedML?.[1] || 0);
+      const nightMl = d.windowConsumedML?.[4] || 0;
+      const ratio = (frontMl + 1) / (nightMl + 1);
+      if (ratio >= 2.0) return 5;
+      if (ratio >= 1.25) return 4;
+      if (ratio >= 0.8) return 3;
+      if (ratio >= 0.5) return 2;
+      return 1;
+    });
+    const avg = dayDots.reduce((sum, d) => sum + d, 0) / 7;
+    return clamp(Math.round(avg), 1, 5);
+  }, [debloatBreakdown.days]);
+  const [weekOffset, setWeekOffset] = useState(0);
+  const weeklyData = useMemo(() => {
+    const todayKey = dayKeyByWake(new Date(), state.wakeMins);
+    const [y, m, d] = todayKey.split("-").map((n) => Number(n));
+    const base = new Date(y, (m || 1) - 1, d || 1, 0, 0, 0, 0);
+    const day = base.getDay();
+    const diffToMonday = (day + 6) % 7;
+    const monday = new Date(base);
+    monday.setDate(base.getDate() - diffToMonday - weekOffset * 7);
+    const days = Array.from({ length: 7 }, (_, i) => {
+      const date = new Date(monday);
+      date.setDate(monday.getDate() + i);
+      const key = dayKeyByWake(date, state.wakeMins);
+      const entry = (state.dailyLog || {})[key];
+      const consumedML = entry?.consumedML ?? 0;
+      const goalML = entry?.goalML ?? state.goalML ?? 0;
+      const ratio = goalML > 0 ? consumedML / goalML : 0;
+      return { key, consumedML, goalML, ratio };
+    });
+    const weekLabel = monday.toLocaleString("en-US", { month: "short", day: "numeric" });
+    return { days, weekLabel };
+  }, [state.dailyLog, state.goalML, state.wakeMins, weekOffset]);
+  const refillCount = useMemo(() => {
+    const logs = state.dailyLog || {};
+    return Object.values(logs).reduce((sum, day) => {
+      const bottleMl = day?.bottleML || state.bottleML;
+      if (!bottleMl) return sum;
+      const consumed = day?.consumedML || 0;
+      return sum + Math.floor(consumed / bottleMl);
+    }, 0);
+  }, [state.dailyLog, state.bottleML]);
+  const singleUseBottlesAvoided = Math.round((refillCount * state.bottleML) / 500);
 
   if (!state.hasOnboarded && state.step === 0) {
     return (
@@ -2684,9 +2774,9 @@ export default function WaterBottleTracker() {
             html, body { scrollbar-width: none; -ms-overflow-style: none; }
             html::-webkit-scrollbar, body::-webkit-scrollbar { display: none; width: 0; height: 0; }
           `}</style>
-          <div className="px-5 pt-6 pb-5">
-            <div className="flex items-start justify-between gap-3">
-              <div className="text-2xl font-extrabold">Analytics</div>
+          <div className="px-5 pt-10 pb-3">
+            <div className="mt-[15px] flex items-start justify-between gap-3">
+              <div className="text-sm font-extrabold">Analytics</div>
               <button
                 onClick={() => setShowAnalytics(false)}
                 className="h-10 w-10 rounded-2xl border border-white/12 bg-white/8 active:bg-white/12 flex items-center justify-center"
@@ -2699,7 +2789,44 @@ export default function WaterBottleTracker() {
           </div>
 
           <div className="px-5">
-            <div className="mt-4 rounded-3xl border border-white/10 bg-white/6 p-4">
+            <div className="mt-1 flex justify-center">
+              <div className="text-4xl font-extrabold">Your Tier Drop</div>
+            </div>
+            <div className="mt-2 flex justify-center">
+              <DebloatTeardrop
+                debloatElo={debloatBreakdown.debloatElo}
+                fillColor={debloatTier.color}
+              />
+            </div>
+            <div className="mt-2 text-xl font-extrabold text-center leading-relaxed" style={{ color: debloatTier.color }}>
+              {debloatTier.emoji} {debloatTier.name} • {debloatTier.detail}
+            </div>
+            <div className="mt-3 flex flex-col items-center gap-1 text-sm text-white/75">
+              <div className="flex items-center gap-2">
+                <span className="font-semibold">Consistency</span>
+                <span className="font-mono tracking-widest">
+                  {Array.from({ length: 5 }, (_, i) => (i < consistencyDots ? "●" : "○")).join(" ")}
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="font-semibold">Volume</span>
+                <span className="font-mono tracking-widest">
+                  {Array.from({ length: 5 }, (_, i) => (i < volumeDots ? "●" : "○")).join(" ")}
+                </span>
+              </div>
+              <div className="flex items-center gap-2 text-purple-400">
+                <span className="font-semibold">Debloat Timing</span>
+                <span className="font-mono tracking-widest">
+                  {Array.from({ length: 5 }, (_, i) => (
+                    <span key={i} className={i < debloatTimingDots ? "text-purple-400" : "text-purple-400/30"}>
+                      {i === 0 ? "●" : " ●"}
+                    </span>
+                  ))}
+                </span>
+              </div>
+            </div>
+
+            <div className="mt-4 rounded-3xl border border-white/10 bg-white/6 p-4 hidden">
               <div className="text-sm font-extrabold">Hydration Elo (7-day)</div>
               <div className="mt-2 text-2xl font-extrabold">
                 DebloatElo: <span className="text-[#0A84FF]">{debloatBreakdown.debloatElo}</span>/100
@@ -2772,6 +2899,65 @@ export default function WaterBottleTracker() {
                     </span>
                   );
                 })()}
+              </div>
+              <div className="mt-6 rounded-3xl border border-white/10 bg-white/6 p-4 inline-block shadow-[0_0_24px_rgba(34,197,94,0.18)]">
+                <div className="text-3xl font-extrabold text-green-500">Refills so Far ♻️: {refillCount}</div>
+                <div className="mt-1 text-lg font-extrabold text-white/60">
+                  That’s ~{singleUseBottlesAvoided} single-use bottles avoided
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-6 rounded-3xl border border-white/10 bg-white/6 p-4">
+              <div className="flex items-center justify-between">
+                <button
+                  onClick={() => setWeekOffset((v) => v + 1)}
+                  className="h-9 w-9 rounded-2xl border border-white/12 bg-white/6 active:scale-[0.99] flex items-center justify-center"
+                  aria-label="Previous week"
+                >
+                  ←
+                </button>
+                <div className="text-sm font-extrabold">Week of {weeklyData.weekLabel}</div>
+                <button
+                  onClick={() => setWeekOffset((v) => Math.max(0, v - 1))}
+                  disabled={weekOffset === 0}
+                  className={
+                    "h-9 w-9 rounded-2xl border border-white/12 bg-white/6 active:scale-[0.99] flex items-center justify-center " +
+                    (weekOffset === 0 ? "opacity-40" : "")
+                  }
+                  aria-label="Next week"
+                >
+                  →
+                </button>
+              </div>
+
+              <div className="mt-4">
+                <div className="relative h-32 rounded-2xl border border-white/10 bg-white/5 px-3 pb-3 pt-4">
+                  <div className="absolute left-0 right-0 top-[20%] h-px bg-white/15" />
+                  <div className="flex h-full items-end justify-between gap-2">
+                    {weeklyData.days.map((d) => {
+                      const ratio = clamp(d.ratio, 0, 1.25);
+                      const heightPct = (ratio / 1.25) * 100;
+                      const label = d.consumedML >= 1000 ? `${(d.consumedML / 1000).toFixed(1)}L` : `${Math.round(d.consumedML)}ml`;
+                      return (
+                        <div key={d.key} className="flex flex-1 flex-col items-center gap-2">
+                          <div className="text-[10px] text-white/60">{d.consumedML > 0 ? label : "0"}</div>
+                          <div className="relative h-full w-full rounded-xl bg-white/5 overflow-hidden">
+                            <div
+                              className="absolute bottom-0 left-0 right-0 rounded-xl bg-[#0A84FF]"
+                              style={{ height: `${heightPct}%` }}
+                            />
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+                <div className="mt-2 flex items-center justify-between text-xs text-white/50 px-2">
+                  {["M", "T", "W", "T", "F", "S", "S"].map((d) => (
+                    <span key={d} className="flex-1 text-center">{d}</span>
+                  ))}
+                </div>
               </div>
             </div>
           </div>
