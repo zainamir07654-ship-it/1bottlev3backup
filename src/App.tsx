@@ -2736,12 +2736,15 @@ export default function WaterBottleTracker() {
     const days = Array.from({ length: 7 }, (_, i) => {
       const date = new Date(monday);
       date.setDate(monday.getDate() + i);
+      date.setHours(0, 0, 0, 0);
+      date.setMinutes(state.wakeMins + 1, 0, 0);
       const key = dayKeyByWake(date, state.wakeMins);
+      const isToday = key === todayKey;
       const entry = (state.dailyLog || {})[key];
       const consumedML = entry?.consumedML ?? 0;
       const goalML = entry?.goalML ?? state.goalML ?? 0;
       const ratio = goalML > 0 ? consumedML / goalML : 0;
-      return { key, consumedML, goalML, ratio };
+      return { key, consumedML, goalML, ratio, isToday };
     });
     const weekLabel = monday.toLocaleString("en-US", { month: "short", day: "numeric" });
     return { days, weekLabel };
@@ -2775,7 +2778,7 @@ export default function WaterBottleTracker() {
             html::-webkit-scrollbar, body::-webkit-scrollbar { display: none; width: 0; height: 0; }
           `}</style>
           <div className="px-5 pt-10 pb-3">
-            <div className="mt-[15px] flex items-start justify-between gap-3">
+            <div className="mt-[20px] flex items-center justify-between gap-3">
               <div className="text-sm font-extrabold">Analytics</div>
               <button
                 onClick={() => setShowAnalytics(false)}
@@ -2789,7 +2792,7 @@ export default function WaterBottleTracker() {
           </div>
 
           <div className="px-5">
-            <div className="mt-1 flex justify-center">
+            <div className="mt-0 flex justify-center">
               <div className="text-4xl font-extrabold">Your Tier Drop</div>
             </div>
             <div className="mt-2 flex justify-center">
@@ -2883,7 +2886,6 @@ export default function WaterBottleTracker() {
                 <div className="h-full rounded-full bg-[#0A84FF]" style={{ width: `${Math.round(progressFrac * 100)}%`, transition: "width .15s ease" }} />
               </div>
               <div className="mt-2 text-xs text-white/55">Tip: scroll down to 0% when you finish the bottle — it will auto-start the next one.</div>
-              <div className="mt-1 text-xs italic text-[#FF453A]/70">Artwork will be updated in the next build.</div>
               <div className="mt-2 text-xs text-white/50">
                 Resets in <span className="font-extrabold tabular-nums text-white/70">{formatCountdown(resetMs)}</span>
               </div>
@@ -2942,9 +2944,12 @@ export default function WaterBottleTracker() {
                       return (
                         <div key={d.key} className="flex flex-1 flex-col items-center gap-2">
                           <div className="text-[10px] text-white/60">{d.consumedML > 0 ? label : "0"}</div>
-                          <div className="relative h-full w-full rounded-xl bg-white/5 overflow-hidden">
+                          <div className="relative h-20 w-full rounded-xl bg-white/5 overflow-hidden">
                             <div
-                              className="absolute bottom-0 left-0 right-0 rounded-xl bg-[#0A84FF]"
+                              className={
+                                "absolute bottom-0 left-0 right-0 rounded-xl " +
+                                (d.isToday ? "bg-green-500" : "bg-white/35")
+                              }
                               style={{ height: `${heightPct}%` }}
                             />
                           </div>
