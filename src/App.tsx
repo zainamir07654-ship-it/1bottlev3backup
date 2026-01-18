@@ -599,6 +599,20 @@ function BottomNavBar({
   onRefill: () => void;
   isAnalyticsEnabled?: boolean;
 }) {
+  const handleAnalyticsClick = async () => {
+    if (!isAnalyticsEnabled) return;
+    try {
+      await Haptics.impact({ style: ImpactStyle.Light });
+    } catch {}
+    onOpenAnalytics();
+  };
+  const handleSettingsClick = async () => {
+    try {
+      await Haptics.impact({ style: ImpactStyle.Light });
+    } catch {}
+    onOpenSettings();
+  };
+
   return (
     <div
       className="fixed inset-x-0 bottom-0 z-40 border-t border-white/10 bg-[#0B0B0F]/80 backdrop-blur-md"
@@ -609,7 +623,7 @@ function BottomNavBar({
       `}</style>
       <div className="mx-auto flex max-w-xl items-center justify-between px-8 pt-3">
         <button
-          onClick={isAnalyticsEnabled ? onOpenAnalytics : undefined}
+          onClick={handleAnalyticsClick}
           disabled={!isAnalyticsEnabled}
           className={"flex w-20 flex-col items-center gap-1 text-xs font-semibold " + (isAnalyticsEnabled ? "text-white/80" : "text-white/40")}
         >
@@ -639,7 +653,7 @@ function BottomNavBar({
           </button>
         )}
 
-        <button onClick={onOpenSettings} className="flex w-20 flex-col items-center gap-1 text-xs font-semibold text-white/80">
+        <button onClick={handleSettingsClick} className="flex w-20 flex-col items-center gap-1 text-xs font-semibold text-white/80">
           <svg viewBox="0 0 24 24" className="h-5 w-5" aria-hidden="true">
             <path
               d="M12 8.2a3.8 3.8 0 1 0 0 7.6 3.8 3.8 0 0 0 0-7.6Z"
@@ -1586,10 +1600,12 @@ export default function WaterBottleTracker() {
   }
 
   function undo() {
+    let undoTarget: number | null = null;
     setState((s) => {
       const h = s.history || [];
       if (h.length === 0) return s;
       const last = h[h.length - 1];
+      undoTarget = last.prevRemaining;
       const nextState = {
         ...s,
         remaining: last.prevRemaining,
@@ -1637,11 +1653,14 @@ export default function WaterBottleTracker() {
       }
       return nextState;
     });
+    if (undoTarget !== null) setScanAnimTarget(undoTarget);
+    setUndoAnimating(true);
     setLowLevelTracked(false);
   }
 
   const bottleWrapRef = useRef<HTMLDivElement | null>(null);
   const [meniscusDragging, setMeniscusDragging] = useState(false);
+  const [undoAnimating, setUndoAnimating] = useState(false);
   const [showPercent, setShowPercent] = useState(false);
   const percentDelayRef = useRef<number | null>(null);
 
@@ -1656,7 +1675,15 @@ export default function WaterBottleTracker() {
   const [showLevelUpdated, setShowLevelUpdated] = useState(false);
   const levelUpdatedTimeoutRef = useRef<number | null>(null);
   const [lowLevelTracked, setLowLevelTracked] = useState(false);
+  const [celebrateClosing, setCelebrateClosing] = useState(false);
+  const celebrateCloseRef = useRef<number | null>(null);
   const [showAnalytics, setShowAnalytics] = useState(false);
+  const [analyticsClosing, setAnalyticsClosing] = useState(false);
+  const analyticsCloseRef = useRef<number | null>(null);
+  const [settingsClosing, setSettingsClosing] = useState(false);
+  const settingsCloseRef = useRef<number | null>(null);
+  const [analyticsOpenTick, setAnalyticsOpenTick] = useState(0);
+  const [analyticsProgressPct, setAnalyticsProgressPct] = useState(0);
   const [lastMorningResetToken, setLastMorningResetToken] = useState<string | null>(() => {
     try {
       return localStorage.getItem("v3_lastMorningResetToken");
@@ -2112,28 +2139,6 @@ export default function WaterBottleTracker() {
     }
   };
 
-  const triggerTestNotifications = async () => {
-    if (!Capacitor.isNativePlatform()) return;
-    try {
-      const perm = await LocalNotifications.requestPermissions();
-      if (perm.display !== "granted") return;
-      const now = Date.now();
-      const tests = [
-        { id: 2001, title: "Morning Reset 🌞", body: "Refill your bottle and we’ll track from here." },
-      ];
-      await LocalNotifications.cancel({ notifications: tests.map((t) => ({ id: t.id })) });
-      await LocalNotifications.schedule({
-        notifications: tests.map((t, i) => ({
-          id: t.id,
-          title: t.title,
-          body: t.body,
-          schedule: { at: new Date(now + 1000 + i * 2000) },
-        })),
-      });
-    } catch {
-      // ignore
-    }
-  };
 
   useEffect(() => {
     checkMorningReset();
@@ -2364,11 +2369,12 @@ export default function WaterBottleTracker() {
   }, []);
 
   useEffect(() => {
+    const percentActive = meniscusDragging || undoAnimating;
     if (percentDelayRef.current) {
       window.clearTimeout(percentDelayRef.current);
       percentDelayRef.current = null;
     }
-    if (!meniscusDragging) {
+    if (!percentActive) {
       setShowPercent(false);
       return;
     }
@@ -2376,7 +2382,7 @@ export default function WaterBottleTracker() {
       setShowPercent(true);
       percentDelayRef.current = null;
     }, 250);
-  }, [meniscusDragging]);
+  }, [meniscusDragging, undoAnimating]);
 
   useEffect(() => {
     return () => {
@@ -2518,6 +2524,13 @@ export default function WaterBottleTracker() {
     e.currentTarget.setPointerCapture(e.pointerId);
     document.body.style.webkitUserSelect = "none";
     document.body.style.setProperty("-webkit-touch-callout", "none");
+    if (scanAnimRafRef.current) {
+      cancelAnimationFrame(scanAnimRafRef.current);
+      scanAnimRafRef.current = null;
+    }
+    setScanAnimTarget(null);
+    setDisplayRemaining(pendingRemaining);
+    setUndoAnimating(false);
     setMeniscusDragging(true);
     setLowLevelTracked(false);
     triggerMeniscusHaptic();
@@ -2553,6 +2566,37 @@ export default function WaterBottleTracker() {
   }, []);
 
   useEffect(() => {
+    setCelebrateClosing(false);
+  }, [state.celebrate]);
+
+  useEffect(() => {
+    return () => {
+      if (celebrateCloseRef.current) window.clearTimeout(celebrateCloseRef.current);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!showAnalytics) return;
+    setAnalyticsClosing(false);
+  }, [showAnalytics]);
+
+  useEffect(() => {
+    return () => {
+      if (analyticsCloseRef.current) window.clearTimeout(analyticsCloseRef.current);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (state.step === 6) setSettingsClosing(false);
+  }, [state.step]);
+
+  useEffect(() => {
+    return () => {
+      if (settingsCloseRef.current) window.clearTimeout(settingsCloseRef.current);
+    };
+  }, []);
+
+  useEffect(() => {
     if (scanAnimTarget === null) {
       setDisplayRemaining(pendingRemaining);
       return;
@@ -2578,6 +2622,7 @@ export default function WaterBottleTracker() {
       } else {
         scanAnimRafRef.current = null;
         setScanAnimTarget(null);
+        setUndoAnimating(false);
       }
     };
 
@@ -2767,6 +2812,19 @@ export default function WaterBottleTracker() {
   }, [state.dailyLog, state.bottleML]);
   const singleUseBottlesAvoided = Math.round((refillCount * state.bottleML) / 500);
 
+  useEffect(() => {
+    if (!showAnalytics) return;
+    setAnalyticsOpenTick((k) => k + 1);
+  }, [showAnalytics]);
+
+  useEffect(() => {
+    if (!showAnalytics) return;
+    const nextPct = Math.round(progressFrac * 100);
+    setAnalyticsProgressPct(0);
+    const id = requestAnimationFrame(() => setAnalyticsProgressPct(nextPct));
+    return () => cancelAnimationFrame(id);
+  }, [showAnalytics, progressFrac, analyticsOpenTick]);
+
   if (!state.hasOnboarded && state.step === 0) {
     return (
       <>
@@ -2779,16 +2837,35 @@ export default function WaterBottleTracker() {
   if (state.hasOnboarded && state.step === 0) {
     if (showAnalytics) {
       return (
-        <div className="min-h-screen bg-[#0B0B0F] text-white select-none" style={{ paddingTop: "calc(env(safe-area-inset-top) + 16px)" }}>
+        <div
+          className={
+            "min-h-screen bg-[#0B0B0F] text-white select-none " +
+            (analyticsClosing ? "animate-[analyticsOut_.22s_ease-in]" : "animate-[analyticsIn_.28s_ease-out]")
+          }
+          style={{ paddingTop: "calc(env(safe-area-inset-top) + 16px)" }}
+        >
           <style>{`
             html, body { scrollbar-width: none; -ms-overflow-style: none; }
             html::-webkit-scrollbar, body::-webkit-scrollbar { display: none; width: 0; height: 0; }
+            @keyframes analyticsIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+            @keyframes analyticsOut { from { opacity: 1; transform: translateY(0); } to { opacity: 0; transform: translateY(8px); } }
           `}</style>
           <div className="px-5 pt-10 pb-3">
             <div className="mt-[20px] flex items-center justify-between gap-3">
               <div className="text-sm font-extrabold">Hydration Health</div>
               <button
-                onClick={() => setShowAnalytics(false)}
+                onClick={async () => {
+                  try {
+                    await Haptics.impact({ style: ImpactStyle.Light });
+                  } catch {}
+                  if (analyticsCloseRef.current) window.clearTimeout(analyticsCloseRef.current);
+                  setAnalyticsClosing(true);
+                  analyticsCloseRef.current = window.setTimeout(() => {
+                    setShowAnalytics(false);
+                    setAnalyticsClosing(false);
+                    analyticsCloseRef.current = null;
+                  }, 220);
+                }}
                 className="h-10 w-10 rounded-2xl border border-white/12 bg-white/8 active:bg-white/12 flex items-center justify-center"
                 aria-label="Close analytics"
                 title="Close"
@@ -2806,6 +2883,7 @@ export default function WaterBottleTracker() {
               <DebloatTeardrop
                 debloatElo={debloatBreakdown.debloatElo}
                 fillColor={debloatTier.color}
+                animateKey={analyticsOpenTick}
               />
             </div>
             <div className="mt-2 text-xl font-extrabold text-center leading-relaxed" style={{ color: debloatTier.color }}>
@@ -2890,7 +2968,7 @@ export default function WaterBottleTracker() {
                 </div>
               </div>
               <div className="mt-2 h-3 rounded-full bg-white/10 overflow-hidden">
-                <div className="h-full rounded-full bg-[#0A84FF]" style={{ width: `${Math.round(progressFrac * 100)}%`, transition: "width .15s ease" }} />
+                <div className="h-full rounded-full bg-[#0A84FF]" style={{ width: `${analyticsProgressPct}%`, transition: "width .7s ease-out" }} />
               </div>
               <div className="mt-2 text-xs text-white/55">Tip: scroll down to 0% when you finish the bottle — it will auto-start the next one.</div>
               <div className="mt-2 text-xs text-white/50">
@@ -2984,6 +3062,10 @@ export default function WaterBottleTracker() {
       >
         <style>{`
           @keyframes fadeOutLineUi { from { opacity: 1; } to { opacity: 0; } }
+          @keyframes modalIn { from { opacity: 0; transform: translateY(10px) scale(0.98); } to { opacity: 1; transform: translateY(0) scale(1); } }
+          @keyframes modalOut { from { opacity: 1; transform: translateY(0) scale(1); } to { opacity: 0; transform: translateY(10px) scale(0.98); } }
+          @keyframes modalFade { from { opacity: 0; } to { opacity: 1; } }
+          @keyframes modalFadeOut { from { opacity: 1; } to { opacity: 0; } }
           .no-scrollbar { scrollbar-width: none; -ms-overflow-style: none; }
           .no-scrollbar::-webkit-scrollbar { display: none; width: 0; height: 0; }
           html, body { scrollbar-width: none; -ms-overflow-style: none; }
@@ -2993,9 +3075,19 @@ export default function WaterBottleTracker() {
 
         {state.celebrate && (
           <div className="fixed inset-0 z-50">
-            <div className="absolute inset-0 bg-black/70 backdrop-blur" />
+            <div
+              className={
+                "absolute inset-0 bg-black/70 backdrop-blur " +
+                (celebrateClosing ? "animate-[modalFadeOut_.2s_ease-in]" : "animate-[modalFade_.25s_ease-out]")
+              }
+            />
             <div className="absolute inset-0 flex items-center justify-center px-5">
-              <div className="w-full max-w-md rounded-3xl border border-white/10 bg-[#121218]/95 p-6 shadow-[0_20px_60px_rgba(0,0,0,.55)]">
+              <div
+                className={
+                  "w-full max-w-md rounded-3xl border border-white/10 bg-[#121218]/95 p-6 shadow-[0_20px_60px_rgba(0,0,0,.55)] " +
+                  (celebrateClosing ? "animate-[modalOut_.2s_ease-in]" : "animate-[modalIn_.28s_cubic-bezier(0.2,0,0,1)]")
+                }
+              >
                 <div className="text-2xl font-extrabold">{state.celebrate.type === "goal" ? "Well done" : "Good job"}</div>
 
                 <div className="mt-2 text-white/75">
@@ -3012,10 +3104,16 @@ export default function WaterBottleTracker() {
 
                 <button
                   onClick={() => {
-                    setState((s) => ({ ...s, celebrate: null }));
-                    if (state.celebrate?.type === "bottle") {
-                      setLowLevelTracked(false);
-                    }
+                    if (celebrateCloseRef.current) window.clearTimeout(celebrateCloseRef.current);
+                    setCelebrateClosing(true);
+                    celebrateCloseRef.current = window.setTimeout(() => {
+                      setState((s) => ({ ...s, celebrate: null }));
+                      if (state.celebrate?.type === "bottle") {
+                        setLowLevelTracked(false);
+                      }
+                      setCelebrateClosing(false);
+                      celebrateCloseRef.current = null;
+                    }, 200);
                   }}
                   className={
                     "mt-6 w-full px-5 py-4 rounded-2xl font-extrabold active:scale-[0.99] " +
@@ -3041,7 +3139,7 @@ export default function WaterBottleTracker() {
               <div
                 className={
                   "relative mt-2 translate-y-[10px] font-extrabold leading-tight transition-all duration-200 ease-out " +
-                  (meniscusDragging ? "text-[clamp(22px,6.2vw,34px)]" : "text-[clamp(24px,6.8vw,38px)]")
+                  (meniscusDragging || undoAnimating ? "text-[clamp(22px,6.2vw,34px)]" : "text-[clamp(24px,6.8vw,38px)]")
                 }
               >
                 <span
@@ -3143,14 +3241,24 @@ export default function WaterBottleTracker() {
           <div className="mt-[24px] mb-[96px] flex flex-col items-center gap-2">
             <div className="flex items-center justify-center gap-3">
               <button
-                onClick={undo}
+                onClick={async () => {
+                  try {
+                    await Haptics.impact({ style: ImpactStyle.Light });
+                  } catch {}
+                  undo();
+                }}
                 disabled={!state.history || state.history.length === 0}
                 className="h-10 px-5 rounded-2xl border border-white/15 bg-white/8 font-extrabold text-center disabled:opacity-40"
               >
                 Undo
               </button>
               <button
-                onClick={() => setShowQuickAdd(true)}
+                onClick={async () => {
+                  try {
+                    await Haptics.impact({ style: ImpactStyle.Light });
+                  } catch {}
+                  setShowQuickAdd(true);
+                }}
                 className="h-10 w-10 rounded-2xl border border-white/10 bg-white/6 active:scale-[0.99] flex items-center justify-center"
                 aria-label="Add water"
                 title="Add water"
@@ -3593,22 +3701,33 @@ export default function WaterBottleTracker() {
         )}
 
         {state.step === 6 && (
-          <div>
+          <div className={settingsClosing ? "animate-[settingsOut_.22s_ease-in]" : "animate-[settingsIn_.28s_ease-out]"}>
             <style>{`
               @keyframes setupIn { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
               @keyframes setupInSoft { from { opacity: 0; transform: translateY(8px) scale(0.99); } to { opacity: 1; transform: translateY(0) scale(1); } }
+              @keyframes settingsIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+              @keyframes settingsOut { from { opacity: 1; transform: translateY(0); } to { opacity: 0; transform: translateY(8px); } }
             `}</style>
 
             <div className="flex items-start justify-between gap-3" style={{ animation: "setupIn .55s ease-out .04s both" }}>
               <div className="text-2xl font-extrabold">Your bottle</div>
               <button
-                onClick={() =>
-                  setState((s) => ({
-                    ...s,
-                    hasOnboarded: true,
-                    step: 0,
-                  }))
-                }
+                onClick={async () => {
+                  try {
+                    await Haptics.impact({ style: ImpactStyle.Light });
+                  } catch {}
+                  if (settingsCloseRef.current) window.clearTimeout(settingsCloseRef.current);
+                  setSettingsClosing(true);
+                  settingsCloseRef.current = window.setTimeout(() => {
+                    setState((s) => ({
+                      ...s,
+                      hasOnboarded: true,
+                      step: 0,
+                    }));
+                    setSettingsClosing(false);
+                    settingsCloseRef.current = null;
+                  }, 220);
+                }}
                 className="h-10 w-10 rounded-2xl border border-white/12 bg-white/8 active:bg-white/12 flex items-center justify-center"
                 aria-label="Close"
                 title="Close"
@@ -3803,15 +3922,6 @@ export default function WaterBottleTracker() {
                 </div>
                 <div className="mt-1 text-[11px] text-white/45">Doesn’t have to be exact.</div>
               </div>
-            </div>
-
-            <div className="mt-4" style={{ animation: "setupIn .55s ease-out .26s both" }}>
-              <button
-                onClick={triggerTestNotifications}
-                className="w-full px-4 py-3 rounded-2xl border border-white/15 bg-white/8 font-extrabold active:scale-[0.99]"
-              >
-                Test notifications
-              </button>
             </div>
 
             <div className="mt-4" style={{ animation: "setupIn .55s ease-out .26s both" }}>

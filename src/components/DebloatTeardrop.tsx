@@ -1,4 +1,4 @@
-import { useId } from "react";
+import { useEffect, useId, useState } from "react";
 import teardropSvg from "../assets/debloat-teardrop.svg?raw";
 
 const clamp = (n: number, a: number, b: number) => Math.max(a, Math.min(b, n));
@@ -16,20 +16,29 @@ function extractFirstPathD(svgText: string) {
 export default function DebloatTeardrop({
   debloatElo,
   fillColor = "#0A84FF",
+  animateKey = 0,
 }: {
   debloatElo: number;
   fillColor?: string;
+  animateKey?: number;
 }) {
   const id = useId();
   const safe = Number.isFinite(debloatElo) ? debloatElo : 0;
   const fillFraction = clamp(safe / 100, 0, 1);
+  const [displayFraction, setDisplayFraction] = useState(0);
   const viewBox = extractViewBox(teardropSvg);
   const d = extractFirstPathD(teardropSvg);
   const parts = viewBox.split(" ").map((v) => Number(v || 0));
   const vbW = parts[2] || 356;
   const vbH = parts[3] || 527;
-  const fillH = Math.round(vbH * fillFraction);
+  const fillH = Math.round(vbH * displayFraction);
   const y = vbH - fillH;
+
+  useEffect(() => {
+    setDisplayFraction(0);
+    const id = requestAnimationFrame(() => setDisplayFraction(fillFraction));
+    return () => cancelAnimationFrame(id);
+  }, [fillFraction, animateKey]);
 
   return (
     <div className="flex flex-col items-center">
@@ -53,7 +62,15 @@ export default function DebloatTeardrop({
           </path>
         </g>
         <g clipPath={`url(#drop-${id})`}>
-          <rect x="0" y={y} width={vbW} height={fillH} fill={fillColor} opacity="0.9" />
+          <rect
+            x="0"
+            y={y}
+            width={vbW}
+            height={fillH}
+            fill={fillColor}
+            opacity="0.9"
+            style={{ transition: "y 600ms ease-out, height 600ms ease-out" }}
+          />
         </g>
         <path d={d} fill="none" stroke="rgba(255,255,255,0.25)" strokeWidth="8" />
       </svg>
