@@ -616,7 +616,7 @@ function BottomNavBar({
           <svg viewBox="0 0 24 24" className="h-5 w-5" aria-hidden="true">
             <path d="M4 19V9M10 19V5M16 19V12M22 19V8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
           </svg>
-          <span>Analytics</span>
+          <span>Hydration Health</span>
         </button>
 
         {isRefill ? (
@@ -1642,6 +1642,8 @@ export default function WaterBottleTracker() {
 
   const bottleWrapRef = useRef<HTMLDivElement | null>(null);
   const [meniscusDragging, setMeniscusDragging] = useState(false);
+  const [showPercent, setShowPercent] = useState(false);
+  const percentDelayRef = useRef<number | null>(null);
 
   const [pendingRemaining, setPendingRemaining] = useState(state.remaining);
   useEffect(() => {
@@ -2362,6 +2364,21 @@ export default function WaterBottleTracker() {
   }, []);
 
   useEffect(() => {
+    if (percentDelayRef.current) {
+      window.clearTimeout(percentDelayRef.current);
+      percentDelayRef.current = null;
+    }
+    if (!meniscusDragging) {
+      setShowPercent(false);
+      return;
+    }
+    percentDelayRef.current = window.setTimeout(() => {
+      setShowPercent(true);
+      percentDelayRef.current = null;
+    }, 250);
+  }, [meniscusDragging]);
+
+  useEffect(() => {
     return () => {
       if (scanHintTimeoutRef.current) window.clearTimeout(scanHintTimeoutRef.current);
       if (scanMessageTimeoutRef.current) window.clearTimeout(scanMessageTimeoutRef.current);
@@ -2769,7 +2786,7 @@ export default function WaterBottleTracker() {
           `}</style>
           <div className="px-5 pt-10 pb-3">
             <div className="mt-[20px] flex items-center justify-between gap-3">
-              <div className="text-sm font-extrabold">Analytics</div>
+              <div className="text-sm font-extrabold">Hydration Health</div>
               <button
                 onClick={() => setShowAnalytics(false)}
                 className="h-10 w-10 rounded-2xl border border-white/12 bg-white/8 active:bg-white/12 flex items-center justify-center"
@@ -3023,7 +3040,7 @@ export default function WaterBottleTracker() {
               </div>
               <div
                 className={
-                  "relative mt-3 translate-y-[10px] font-extrabold leading-tight transition-all duration-200 ease-out " +
+                  "relative mt-2 translate-y-[10px] font-extrabold leading-tight transition-all duration-200 ease-out " +
                   (meniscusDragging ? "text-[clamp(22px,6.2vw,34px)]" : "text-[clamp(24px,6.8vw,38px)]")
                 }
               >
@@ -3059,36 +3076,42 @@ export default function WaterBottleTracker() {
           </div>
         </div>
 
-        <div className="px-5 translate-y-[10px]">
+        <div className="px-5 translate-y-[40px]">
           <div
             className="flex flex-col items-center justify-center gap-0 select-none"
             style={{ WebkitUserSelect: "none", WebkitTouchCallout: "none" }}
             onContextMenu={(e) => e.preventDefault()}
           >
-            {meniscusDragging && (
-              <>
-                <style>{`@keyframes pctIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}`}</style>
-                <div
-                  className="text-lg font-extrabold tabular-nums mb-[10px] transition-opacity duration-200"
-                  style={{ animation: "pctIn 0.2s ease-out" }}
-                >
-                  {remainingPct}%
-                </div>
-              </>
-            )}
-
             <div
-              ref={bottleWrapRef}
-              className="relative h-[300px] -translate-x-[6px] select-none overflow-visible"
-              style={{
-                touchAction: "none",
-                WebkitUserSelect: "none",
-                WebkitTouchCallout: "none",
-                transform: "scale(1.2)",
-                transformOrigin: "center",
-              }}
-              onContextMenu={(e) => e.preventDefault()}
+              className="relative w-[144px]"
+              style={{ transform: "scale(1.2)", transformOrigin: "center" }}
             >
+              <div className="relative h-0 w-full">
+                {showPercent && (
+                  <>
+                    <style>{`@keyframes pctIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}`}</style>
+                  <div className="absolute left-1/2 -translate-x-1/2" style={{ top: "-12px" }}>
+                    <div
+                      className="text-lg font-extrabold tabular-nums transition-opacity duration-200"
+                      style={{ animation: "pctIn 0.2s ease-out" }}
+                    >
+                      {remainingPct}%
+                    </div>
+                  </div>
+                  </>
+                )}
+              </div>
+
+              <div
+                ref={bottleWrapRef}
+                className="relative h-[300px] translate-x-[10px] select-none overflow-visible"
+                style={{
+                  touchAction: "none",
+                  WebkitUserSelect: "none",
+                  WebkitTouchCallout: "none",
+                }}
+                onContextMenu={(e) => e.preventDefault()}
+              >
               {showFlag && (
                 <div
                   className="absolute left-[3px] text-[13px] font-extrabold leading-none text-white/50"
@@ -3112,6 +3135,7 @@ export default function WaterBottleTracker() {
                 onMeniscusPointerCancel={onMeniscusPointerCancel}
                 isMeniscusDragging={meniscusDragging}
               />
+              </div>
             </div>
 
           </div>
